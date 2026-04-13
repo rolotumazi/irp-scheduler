@@ -1,0 +1,11 @@
+[project]
+name = "schedule-irp"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "django>=6.0.4",
+    "django-environ>=0.13.0",
+    "gunicorn>=25.3.0",
+    "psycopg[binary]>=3.3.3",
+    "whitenoise>=6.12.0",
+]

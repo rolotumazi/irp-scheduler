@@ -11,8 +11,16 @@
   </style>
 </head>
 <body>
-  <header>
-    <h1><a href="{% url 'interviews:home' %}" style="text-decoration: none; color: inherit;">Schedule IRP</a></h1>
+  <header style="display: flex; justify-content: space-between; align-items: center;">
+    <h1 style="margin: 0;"><a href="{% url 'interviews:home' %}" style="text-decoration: none; color: inherit;">Schedule IRP</a></h1>
+    <nav>
+      {% if user.is_authenticated %}
+        <span>{{ user.email }}</span> &middot;
+        <a href="{% url 'interviews:logout' %}">Sign out</a>
+      {% else %}
+        <a href="{% url 'interviews:login_request' %}">Sign in</a>
+      {% endif %}
+    </nav>
   </header>
   <main>
     {% block content %}{% endblock %}

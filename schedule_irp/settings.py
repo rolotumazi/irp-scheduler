@@ -67,6 +67,23 @@ DATABASES = {
 
 AUTH_USER_MODEL = 'interviews.User'
 
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+    'sesame.backends.ModelBackend',
+]
+
+# Magic-link tokens (django-sesame): 15-minute window, single-use.
+SESAME_MAX_AGE = 900
+SESAME_ONE_TIME = True
+
+LOGIN_URL = 'interviews:login_request'
+LOGIN_REDIRECT_URL = 'interviews:home'
+LOGOUT_REDIRECT_URL = 'interviews:home'
+
+EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
+DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='noreply@schedule-irp.local')
+SITE_URL = env('SITE_URL', default='http://127.0.0.1:8000')
+
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},

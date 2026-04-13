@@ -3,6 +3,14 @@
 {% block title %}Schedule IRP — Home{% endblock %}
 
 {% block content %}
-  <h2>Coming soon</h2>
-  <p>The schedule will be published here shortly. Sign in to see your sessions.</p>
+  {% if user.is_authenticated %}
+    <h2>Welcome, {{ user.get_full_name|default:user.email }}</h2>
+    <p>Role: <strong>{{ user.get_role_display }}</strong></p>
+    <p>The schedule will appear here once it's published.</p>
+    <p><a href="{% url 'interviews:logout' %}">Sign out</a></p>
+  {% else %}
+    <h2>Coming soon</h2>
+    <p>The schedule will be published here shortly.</p>
+    <p><a href="{% url 'interviews:login_request' %}">Sign in</a> to see your sessions.</p>
+  {% endif %}
 {% endblock %}

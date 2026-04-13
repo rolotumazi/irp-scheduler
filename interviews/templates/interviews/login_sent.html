@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+
+{% block title %}Check your inbox — Schedule IRP{% endblock %}
+
+{% block content %}
+  <h2>Check your inbox</h2>
+  <p>If <strong>{{ email }}</strong> matches an account, a sign-in link is on its way.</p>
+  <p>The link expires in 15 minutes and can only be used once.</p>
+  <p><a href="{% url 'interviews:login_request' %}">Use a different email</a></p>
+{% endblock %}

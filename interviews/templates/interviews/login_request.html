@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}Sign in — Schedule IRP{% endblock %}
+
+{% block content %}
+  <h2>Sign in</h2>
+  <p>Enter your email and we'll send you a one-time sign-in link.</p>
+  <form method="post" novalidate>
+    {% csrf_token %}
+    <p>
+      <label for="{{ form.email.id_for_label }}">{{ form.email.label }}</label><br>
+      {{ form.email }}
+    </p>
+    {% if form.email.errors %}
+      <p style="color: #b00020;">{{ form.email.errors.0 }}</p>
+    {% endif %}
+    <button type="submit">Send me a link</button>
+  </form>
+{% endblock %}

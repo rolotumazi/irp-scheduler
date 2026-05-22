@@ -1,0 +1,52 @@
+name: schedule-irp
+
+# Phase 1 stack: the web app + Postgres. The worker, cron, and Caddy services
+# are added in later phases as the subsystems that need them land.
+#
+# Dev:  `docker compose up --build`  (sane defaults below, no .env required)
+# Prod: supply real values via .env (and IMAGE_NAME/IMAGE_TAG), then
+#       `docker compose pull && docker compose up -d`.
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-irp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-irp}
+      POSTGRES_DB: ${POSTGRES_DB:-irp}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-irp} -d ${POSTGRES_DB:-irp}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  web:
+    image: ${IMAGE_NAME:-schedule-irp}:${IMAGE_TAG:-latest}
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DEBUG: ${DEBUG:-True}
+      SECRET_KEY: ${SECRET_KEY:-django-insecure-dev-only-change-in-prod}
+      DATABASE_URL: ${DATABASE_URL:-postgres://irp:irp@db:5432/irp}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+      SITE_URL: ${SITE_URL:-http://127.0.0.1:8000}
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  pgdata:

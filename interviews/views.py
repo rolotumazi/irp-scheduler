@@ -1,12 +1,18 @@
 from django.conf import settings
 from django.contrib.auth import logout
 from django.core.mail import send_mail
+from django.http import HttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from sesame.utils import get_query_string
 
 from .forms import LoginRequestForm
 from .models import User
+
+
+def healthz(request):
+    """Liveness probe for the compose healthcheck and post-deploy smoke test."""
+    return HttpResponse('ok', content_type='text/plain')
 
 
 def home(request):

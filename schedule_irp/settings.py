@@ -18,6 +18,10 @@ SECRET_KEY = env('SECRET_KEY', default='django-insecure-dev-only-change-in-prod'
 DEBUG = env('DEBUG')
 ALLOWED_HOSTS = env('ALLOWED_HOSTS')
 
+# Needed once the app sits behind Caddy on an HTTPS domain (CSRF origin check).
+# e.g. CSRF_TRUSTED_ORIGINS=https://schedule.example.ac.uk
+CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',

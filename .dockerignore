@@ -1,0 +1,32 @@
+# Version control / CI
+.git
+.github
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.uv-cache/
+
+# Django local artifacts
+db.sqlite3
+db.sqlite3-journal
+staticfiles/
+media/
+*.log
+
+# Secrets and environment
+.env
+.env.*
+!.env.example
+
+# Upstream Teams exports (contain real join URLs)
+*.xlsx
+
+# Docs and editor/OS cruft
+*.md
+.claude/
+.idea/
+.vscode/
+.DS_Store
+*.swp

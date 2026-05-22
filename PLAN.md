@@ -1,185 +1,417 @@
-# Schedule IRP — Platform Plan
+# Schedule IRP — Platform Plan (v2)
 
-A dashboard showing the schedule of ~300 student project presentations ("interviews") over 8 working days. Interviewers, interviewees, and admins log in to view sessions and their Microsoft Teams links. The schedule itself is produced and maintained by external services; this platform is a thin, read-mostly surface over that source of truth.
+A web application that **collects panelist availability, computes the interview
+schedule, and keeps everyone informed by email**. ~300 student project
+presentations ("interviews") are placed across 8 working days into a fixed pool
+of pre-created Microsoft Teams meetings. Each participant signs in to see their
+sessions and the correct Teams link for their current assignment.
+
+> **What changed from v1.** The original plan scoped this as a *thin, read-mostly
+> surface* over an external scheduler, with email and availability collection as
+> explicit non-goals. That has been reversed by decision:
+> - **This app now owns the scheduling logic** (was: external service).
+> - **This app collects panelist availability** (was: handled upstream).
+> - **Email notifications are in scope** (was: deferred to post-v1).
+> - **Teams integration is unchanged**: keep importing the pre-created meeting
+>   pool from xlsx and surface the right link per assignment. No Microsoft Graph
+>   API.
+>
+> The inbound "external scheduler" API and the outbound reschedule webhook from
+> v1 are therefore **removed**; their responsibilities move inside this app.
 
 ---
 
 ## 1. Goals & Non-Goals
 
-### Goals (v1)
-- Provide a single dashboard where all participants see their upcoming sessions and Teams links.
-- Let admins oversee, edit, and re-import the full schedule.
-- Let participants file a reschedule request, which is forwarded to an external scheduler.
-- Accept authoritative schedule updates from the external scheduler via API.
+### Goals (v2)
+- Single dashboard where each participant sees their sessions and Teams links.
+- **Collect availability/preferences from panelists** via a self-serve form,
+  opened and reminded by email.
+- **Compute an assignment** of interviews → timeslots that respects panelist
+  availability and avoids double-booking, with an admin review-and-publish step.
+- **Notify participants by email** on: schedule changes, preference requests
+  (+ reminders to non-responders), session reminders, and reschedule outcomes.
+- Let participants file a reschedule request; admin re-solves or adjusts and the
+  app notifies the requester of the outcome.
+- Import the pre-created Teams meeting pool from xlsx (the timeslot inventory).
 
-### Non-goals (v1, explicit deferrals)
-- Email notifications (send invites, reminders, change notices).
-- `.ics` calendar file download.
-- Google / Outlook calendar sync.
+### Non-goals (v2)
+- Collecting **interviewee** availability (students are slotted around panels).
+- Live Microsoft Graph API meeting creation/attendee management (links are
+  pre-created and imported).
+- `.ics` download / Google / Outlook calendar sync.
 - In-app chat, comments, or feedback on presentations.
-- Self-serve availability collection (handled by upstream app).
+- Multi-tenancy / multiple concurrent events.
 
 ---
 
 ## 2. Stack
 
+**Docker-first.** The app builds into a single image and runs as a
+**self-contained `docker compose` stack** — `docker compose up` brings the whole
+web-app online. We develop and run in containers from the start (dev/prod
+parity), not just at deploy time. Unchanged from v1 except additions marked
+**(new)**.
+
 | Layer | Choice | Why |
 |---|---|---|
-| Language | Python 3.12+ | Team familiarity |
-| Framework | Django 5.x | Free admin site, built-in auth, batteries included |
-| Database | SQLite (dev) → Postgres (prod, if multi-instance) | Scale is modest |
-| Auth | `django-sesame` magic-link (email) | No passwords for a 2-week event |
-| Templates | Django templates + `htmx` for interactions | No SPA needed at this scale |
-| Styling | Tailwind via `django-tailwind` (or plain CSS) | Fast to iterate |
-| Audit | `django-simple-history` on `Interview` | Track admin edits |
-| Email (dev) | Mailtrap | Sandboxes magic-link emails |
-| Email (prod) | Resend (free: 3k/month, 100/day) | Clean DX, sufficient volume |
-| Hosting | Self-hosted Linux VM, Docker container | Full control, data stays on infra you manage |
-| Process manager | Gunicorn behind a reverse proxy (nginx or Caddy) on the host | Standard Django prod setup; reverse proxy handles TLS |
-| Static files | WhiteNoise (served from inside the container) | Avoids needing the reverse proxy to know about the app's static dir |
+| Language | Python 3.13 | Project requirement (`requires-python >=3.13`) |
+| Framework | Django 6.0 | Free admin, built-in auth, **built-in Tasks framework (new)** |
+| Database | **Postgres in a container** (named volume) | Self-contained, prod-appropriate |
+| Auth | `django-sesame` magic-link | No passwords for a short event |
+| Templates | Django templates + `htmx` | The availability grid is the only rich UI |
+| Styling | Tailwind (or plain CSS) | Fast to iterate |
+| **Solver (new)** | OR-Tools CP-SAT | Correct, handles hard + soft constraints at this size |
+| **Background work (new)** | Django 6 Tasks framework (DB backend) + a worker container; cron container for time-based sends | Avoids Celery/Redis; matches modest scale |
+| Audit | `django-simple-history` on `Interview` | Track edits + reconstruct schedule changes |
+| **Email (locked)** | **Resend** (SMTP backend, verified domain + SPF/DKIM); console backend only for local dev | Single transport everywhere; clean DX |
+| **Web server (new)** | Gunicorn (in the web container) | Standard Django prod server |
+| **Reverse proxy / TLS (new)** | Caddy container, automatic HTTPS | One-command TLS; no manual cert wrangling |
+| **Orchestration (new)** | `docker compose` (web + worker + cron + Postgres + Caddy) | Full self-contained stack |
+| **CI/CD (new)** | GitHub Actions → **Docker Hub** → SSH deploy to dev VM | Build → test → deploy on push to main (§11) |
+| Static files | WhiteNoise (in the web container) | No separate static host needed |
 | Timezone | `Europe/London` everywhere | Only supported zone |
+
+### Container topology
+
+```
+docker compose:
+  caddy     → terminates TLS, reverse-proxies to web        (ports 80/443)
+  web       → gunicorn + Django (WhiteNoise static)         (internal)
+  worker    → drains the Notification queue + runs solver jobs
+  cron      → fires reminder management commands on schedule
+  db        → Postgres, persistent named volume + backup cron
+```
+
+All app containers share one image (built once); `web`, `worker`, and `cron`
+differ only by entrypoint/command. Caddy and Postgres are stock images.
+Configuration is via env (`.env`), including `DATABASE_URL`, `SITE_URL`,
+`SECRET_KEY`, email + Resend keys, and the public domain for Caddy.
+
+> **Build-time check:** Django 6's Tasks framework is the preferred queue. If a
+> chosen backend isn't suitable, the fallback is plain **cron + management
+> commands** for every send (reminders are cron-driven regardless), with
+> change/preference emails enqueued to a DB table drained by a worker command.
+> Either way, no request ever sends 300 emails synchronously.
 
 ---
 
 ## 3. Data Model
 
-Teams links are **tied to timeslots, not to interviews** — a timeslot is a fixed (time + room + link) triple created once up front. Rescheduling an interview means reassigning it to a different timeslot; the Teams link follows automatically.
+Teams links stay **tied to timeslots**. A timeslot is a fixed
+(time + room + link) triple imported from the meeting pool. Assigning or moving
+an interview reassigns its timeslot; the link follows automatically.
+
+Existing models (`User`, `Timeslot`, `Interview`, `InterviewPanelist`,
+`RescheduleRequest`) are kept. **New models are marked (new).** `Interview` keeps
+its `interviewee` and fixed `panelists`; what the solver decides is the
+`timeslot` (made nullable until scheduled).
 
 ```
-User (Django's AbstractUser)
-  id, email (unique), name, role ∈ {admin, interviewer, interviewee}, is_active
+User (AbstractUser)
+  email (unique), name, role ∈ {admin, interviewer, interviewee}, is_active
 
 Timeslot
-  id
-  start_at, end_at         # tz-aware, stored UTC, displayed Europe/London
-  teams_link               # static URL, manually created, bulk-loaded
-  room_label               # optional, human-readable ("Room A", "Online-1")
-  (unique together: start_at, room_label)
+  slot_ref (unique), day_label, start_at, end_at, room_label, teams_link
+  # imported from the bulk Teams xlsx (the meeting pool / inventory)
 
 Interview
-  id
-  external_id              # key used by upstream scheduler for idempotent upsert
-  title                    # presentation title
-  timeslot                 # FK → Timeslot
-  interviewee              # FK → User (role=interviewee)
-  status ∈ {scheduled, cancelled, completed}
+  external_id (unique), title, status ∈ {scheduled, cancelled, completed}
+  interviewee  (FK → User, role=interviewee)
+  panelists    (M2M → User via InterviewPanelist)   # fixed panel composition
+  timeslot     (FK → Timeslot, NULLABLE)            # null until scheduled  ← change
   created_at, updated_at
 
-InterviewPanelist           # M2M between Interview and interviewers
-  interview (FK), user (FK, role=interviewer)
-  (unique together: interview, user)
+InterviewPanelist
+  interview (FK), user (FK, role=interviewer)        # who examines, not when
+
+PreferenceRound (new)
+  name, opens_at, closes_at, status ∈ {draft, open, closed}
+  min_available_slots   # int, enforced on submit (0 = no minimum)
+  # single round for the event by default; model supports more
+
+PanelistAvailability (new)
+  round (FK), panelist (FK → User, role=interviewer), timeslot (FK → Timeslot)
+  state ∈ {available, preferred, unavailable}
+  (unique together: round, panelist, timeslot)
+  # absence of a row = "no response yet"; UI offers day/half-day bulk toggles
+
+SchedulePublication (new)
+  created_by (FK → User), created_at, solver_status, objective_value, notes
+  # one row per publish; lets us diff old→new and audit who published when
+
+Notification (new)
+  recipient (FK → User)
+  kind ∈ {schedule_change, preference_request, preference_reminder,
+          session_reminder, reschedule_outcome}
+  interview (FK, nullable), subject, body
+  status ∈ {queued, sent, failed}
+  dedupe_key (unique)        # idempotency: e.g. "reminder:<interview>:<user>"
+  created_at, sent_at, error
 
 RescheduleRequest
-  id
-  interview (FK)
-  requested_by (FK → User)
-  reason                   # free text
-  status ∈ {pending, forwarded, accepted, rejected, withdrawn}
-  external_ref             # id returned by the external scheduler
-  created_at, updated_at
+  interview (FK), requested_by (FK), reason
+  status ∈ {pending, scheduled, rejected, withdrawn}   # 'forwarded' dropped
+  resolution_note, created_at, updated_at              # outcome is internal now
 
-HistoricalInterview         # provided by django-simple-history automatically
+HistoricalInterview        # django-simple-history, automatic
 ```
 
-Indexes: `Timeslot.start_at`, `Interview.timeslot`, `Interview.interviewee`, `InterviewPanelist.user`.
+Indexes: `Timeslot.start_at`, `Interview.timeslot`, `Interview.interviewee`,
+`InterviewPanelist.user`, `PanelistAvailability(round, panelist)`,
+`Notification.status`.
+
+> **Availability granularity — locked: per-timeslot.** Panelists mark
+> individual timeslots `available`/`preferred`. The form presents a day /
+> half-day grid with "select all / clear" bulk toggles so a panelist isn't
+> ticking hundreds of boxes one by one, but the stored unit is the timeslot.
+> Submission enforces `PreferenceRound.min_available_slots` (see §5).
 
 ---
 
-## 4. URL Routes (user-facing)
+## 4. Scheduling Engine
+
+The core new capability. Given the fixed panel of each interview and the
+collected panelist availability, assign each interview to a timeslot.
+
+**Model (OR-Tools CP-SAT):**
+- Decision var `x[i,t] ∈ {0,1}` — interview `i` placed in timeslot `t`.
+- **Each interview placed once:** `Σ_t x[i,t] = 1` (or = 1 only for
+  `status=scheduled`; cancelled ones excluded).
+- **One interview per timeslot:** `Σ_i x[i,t] ≤ 1` (a slot = one room at one
+  time; parallel sessions are *different* timeslots).
+- **Availability:** `x[i,t] = 0` if any panelist of `i` is `unavailable` at `t`
+  (or has no `available/preferred` row for `t`).
+- **No panelist double-booking:** for each panelist `p` and each wall-clock
+  window `w`, `Σ x[i,t] ≤ 1` over interviews `i` containing `p` and timeslots
+  `t` overlapping `w`. (Timeslots are grouped by overlap; parallel rooms share a
+  window.)
+- **Objective (soft):** maximise `preferred` placements, then minimise each
+  panelist's day-spread / idle gaps. Tunable weights.
+
+**Workflow:** admin triggers a solve → solver runs as a background task →
+produces a *proposed* assignment → admin reviews (incl. any unplaceable
+interviews and why) → **publish**. Publish writes the timeslots, records a
+`SchedulePublication`, diffs against the previous live assignment, and enqueues
+`schedule_change` notifications only for participants whose slot actually
+changed.
+
+> Fallback if OR-Tools is unwanted: greedy placement (most-constrained interview
+> first) + local-search repair. More code, less optimal, no extra dependency.
+
+---
+
+## 5. Preference Collection
+
+1. Admin creates/opens a `PreferenceRound` (sets `closes_at`).
+2. App emails every panelist a `preference_request` with a magic-link to their
+   availability form.
+3. Panelist marks each slot `available` / `preferred` / leaves blank, using
+   day/half-day bulk toggles; saved via htmx. Submission is rejected with a
+   clear message ("please mark at least N timeslots") until they meet
+   `round.min_available_slots`. A live counter shows progress toward the minimum.
+4. App emails `preference_reminder` to non-responders on a schedule (cron) until
+   the round closes.
+5. Admin dashboard shows response rate; once satisfied, admin runs the solver
+   (§4).
+
+---
+
+## 6. Notification Engine
+
+A single `Notification` table is the queue + audit log. Every send goes through
+it; `dedupe_key` guarantees idempotency (safe to re-run a cron command).
+
+| kind | trigger | recipients |
+|---|---|---|
+| `preference_request` | round opened | all panelists |
+| `preference_reminder` | cron, while round open | non-responding panelists |
+| `schedule_change` | publish (§4) or admin/reschedule edit | participants whose slot changed |
+| `session_reminder` | cron (e.g. day-before & 1h-before) | both participants of upcoming sessions |
+| `reschedule_outcome` | request resolved | the requester |
+
+- A worker (Tasks framework or `manage.py send_pending_notifications`) drains
+  `queued` rows, sends via the configured email backend, marks `sent`/`failed`.
+- Time-based kinds (`*_reminder`) are produced by cron-run management commands
+  that create `queued` rows (deduped), then drained by the same worker.
+- Templates live in `templates/emails/` (text + optional HTML).
+
+---
+
+## 7. URL Routes (user-facing)
 
 | Method | Path | View | Access |
 |---|---|---|---|
-| GET | `/` | Dashboard (signed-in: my sessions; signed-out: login) | all |
-| GET | `/login` | Request magic link form | public |
-| GET | `/auth/<token>/` | Consume magic link | public |
-| GET | `/logout` | Logout | signed-in |
-| GET | `/schedule/` | Full schedule (all sessions, filterable by day/person) | signed-in |
-| GET | `/schedule/<id>/` | Session detail (title, panel, times, Teams link) | signed-in |
-| POST | `/schedule/<id>/reschedule/` | Submit reschedule request | participants only |
-| GET | `/requests/` | My reschedule requests | signed-in |
-| GET | `/admin/` | Django admin (full CRUD, CSV import action) | admin only |
+| GET | `/` | Dashboard: my sessions / login | all |
+| GET | `/login`, `/auth/<token>/`, `/logout` | Magic-link auth | public / signed-in |
+| GET | `/schedule/` | Full schedule, filterable by day/person | signed-in |
+| GET | `/schedule/<id>/` | Session detail (panel, time, Teams link) | signed-in |
+| POST | `/schedule/<id>/reschedule/` | File reschedule request | participants |
+| GET | `/requests/` | My reschedule requests + status | signed-in |
+| GET/POST | `/availability/<round>/` | Panelist availability grid (htmx) | panelists |
+| GET | `/admin/` | Django admin: rounds, solve, publish, CRUD | admin |
+
+Admin-side scheduling actions (run solver, review proposal, publish) live as
+custom admin views / actions rather than separate public routes.
 
 ---
 
-## 5. External-facing API (service-token auth)
+## 8. Imports
 
-All endpoints under `/api/v1/`, auth via `Authorization: Bearer <token>` matched against a single static token loaded from the `SCHEDULER_API_TOKEN` env var. JSON in, JSON out. Rotation = update env var + restart container + notify scheduler service.
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/api/v1/schedule/bulk` | Full upsert — idempotent by `external_id` |
-| PATCH | `/api/v1/schedule/<external_id>` | Update a single session |
-| DELETE | `/api/v1/schedule/<external_id>` | Cancel a session |
-| POST | `/api/v1/reschedule/<request_id>/outcome` | Scheduler reports accepted / rejected |
-
-### Outbound webhook
-- `POST {SCHEDULER_WEBHOOK_URL}/reschedule-requests` — sent when a user files a reschedule request. Payload: request id, interview external_id, requester email, reason.
+- **Teams meeting pool** → `Timeslot` rows. Source is
+  `bulkIRPTeamsMeetings_source.xlsx`, sheet `Meetings`
+  (`MeetingID, Date, DayLabel, StartTime, EndTime, JoinUrl, Status`). Importer
+  exists: `manage.py import_timeslots`. Only rows with `Status=Created` and a
+  `JoinUrl` get a live link.
+- **Interviews + panels** → `Interview` + `InterviewPanelist`. Needs an importer
+  (CSV/xlsx): `external_id, title, interviewee_email, panelist_emails` (no time —
+  the solver assigns that). Users referenced must already exist; abort with a
+  per-row error report on unknown email.
 
 ---
 
-## 6. Visibility & Authorization
+## 9. Visibility & Authorization
 
-- **Everyone signed in** can see the full schedule (sessions, titles, participants).
-- **Only participants** of a session (interviewee or any panelist) see the "Request reschedule" button on that session.
-- **Admins** can edit any session and see audit history; admin edits are logged with user + timestamp + diff.
-- **Teams links** are visible to signed-in users only (never exposed to the public).
+- Signed-in users see the full schedule; **Teams links never shown to the public**.
+- Only a session's participants see its "Request reschedule" button.
+- Only panelists see/fill their own availability form.
+- Admins run rounds, the solver, publishing, and all CRUD; edits are audited
+  (user + timestamp + diff).
 
 ---
 
-## 7. CSV Format (initial import)
+## 10. Phased Build Order
 
-Bulk upload is **two files**, loaded in order.
+Done so far: scaffold, custom `User` + roles, magic-link auth, base data model
+(`Timeslot/Interview/InterviewPanelist/RescheduleRequest`), admin registration,
+and the Teams-pool importer.
 
-**`timeslots.csv`** — the fixed set of (time, room, Teams link) triples, created once.
+1. **Container foundation + pipeline** — multi-stage `Dockerfile` (uv-based),
+   `compose` with `web` (gunicorn) + `db` (Postgres on a volume); switch dev to
+   Postgres; run the existing app in-container. Then stand up the **GitHub
+   Actions build→test→deploy pipeline (§11)** so every push to `main` ships to
+   the dev VM from the first feature onward. Worker/cron/Caddy services added as
+   the subsystems that need them land.
+2. **Make `Interview.timeslot` nullable** + migration; interviews can exist
+   unscheduled.
+3. **Interview/panel importer** (§8).
+4. **Dashboard + schedule views** — my sessions, full schedule, session detail
+   with the correct Teams link.
+5. **Preference round + availability grid** — models, magic-linked form, htmx
+   bulk toggles + min-slot enforcement, admin response dashboard.
+6. **Notification engine + worker container** — `Notification` model, worker
+   service draining the queue, email templates, dedupe; wire `preference_request`
+   + add the `cron` service for `preference_reminder`.
+7. **Scheduling engine** — OR-Tools model, background solve (worker), admin
+   review-and-publish, diff → `schedule_change` notifications.
+8. **Session reminders** — cron command producing `session_reminder` rows.
+9. **Reschedule flow** — form, participant guard, admin resolution,
+   `reschedule_outcome` email.
+10. **Harden & ship the full stack** — `django-simple-history`, admin filters,
+    add the **Caddy** service (automatic HTTPS), verify the Resend domain
+    (SPF/DKIM), Postgres backup cron, and confirm the pipeline deploys the full
+    five-service stack.
+
+---
+
+## 11. CI/CD Pipeline
+
+GitHub Actions, one workflow (`.github/workflows/ci-deploy.yml`), three jobs.
+Registry: **Docker Hub**. Deploy target: the **dev VM**, reached by the
+GitHub-hosted runner over **SSH**. Trigger: **push to `main`** deploys;
+build+test also run on pull requests, but only `main` deploys.
+
 ```
-slot_ref,start_at,end_at,room_label,teams_link
-A-0900,2026-05-04T09:00,2026-05-04T09:30,Room A,https://teams.microsoft.com/l/meetup-join/...
-B-0900,2026-05-04T09:00,2026-05-04T09:30,Room B,https://teams.microsoft.com/l/meetup-join/...
+push / PR ─► test ─► build & push ─► deploy
+              │         │ (main)       │ (main)
+              ▼         ▼              ▼
+        test + migrate  Docker Hub   ssh VM: compose pull,
+        on a Postgres   :sha+:latest  migrate, up -d
+        service container
 ```
 
-**`interviews.csv`** — assigns presentations to timeslots.
-```
-external_id,title,slot_ref,interviewee_email,panelist_emails
-IRP-001,Quantum foo in bar,A-0900,ada@uni.ac.uk,grace@uni.ac.uk;alan@uni.ac.uk
-```
+**1. `test`** (every push + PR)
+- Postgres service container; `DATABASE_URL` points at it.
+- `uv sync`, `manage.py makemigrations --check`, `migrate`, `test` (+ `ruff`).
+  Red tests block the pipeline.
 
-- Times are London local, ISO 8601, no offset.
-- `panelist_emails` is semicolon-separated.
-- `slot_ref` must exist in the previously-loaded `timeslots.csv`.
-- Users referenced by email must already exist; importer aborts on unknown email or missing slot and reports which rows failed.
+**2. `build`** (main only, needs `test`)
+- Buildx → log in to Docker Hub (`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`) →
+  build the one app image → push `:${{ github.sha }}` (immutable, for rollback)
+  and `:latest`. Layer cache via Actions cache.
+
+**3. `deploy`** (main only, needs `build`)
+- Scoped to a GitHub **Environment `dev`** that holds the deploy secrets.
+- SSH into the VM (`SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`[, `SSH_PORT`]) and,
+  in the deploy directory:
+  `IMAGE_TAG=$SHA docker compose pull` →
+  `docker compose run --rm web manage.py migrate --noinput` →
+  `IMAGE_TAG=$SHA docker compose up -d`.
+- `collectstatic` runs in the image entrypoint. Compose pins
+  `image: <user>/schedule-irp:${IMAGE_TAG:-latest}`, so rollback = re-run an
+  older SHA.
+
+**Secrets split**
+- *GitHub* (CI only): `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `SSH_HOST`,
+  `SSH_USER`, `SSH_PRIVATE_KEY`, `SSH_PORT?`.
+- *VM `.env`* (app runtime, never in GitHub): `SECRET_KEY`, `RESEND_API_KEY`,
+  `POSTGRES_PASSWORD`, `DATABASE_URL`, `SITE_URL`, `ALLOWED_HOSTS`, Caddy domain.
+
+**One-time VM provisioning** (manual, documented): install Docker + compose,
+create the deploy user + SSH key, place `docker-compose.yml` + `.env`, point DNS
+at the VM for Caddy. The pipeline assumes this exists.
 
 ---
 
-## 8. Phased Build Order
+## 12. Decisions Locked / Open
 
-1. **Scaffold** — `django-admin startproject`, add app `interviews`, configure settings, Postgres toggle, London TZ, base template.
-2. **User model** — custom User with `role` field; create superuser; load a fixture of test users.
-3. **Magic-link auth** — wire `django-sesame`, login request page, email backend (Mailtrap in dev).
-4. **Data model** — `Interview`, `InterviewPanelist`, `RescheduleRequest`; migrations; register in Django admin.
-5. **CSV import** — management command + admin action; validation & error report.
-6. **Dashboard views** — "My sessions" (home), full schedule list, session detail; basic Tailwind styling.
-7. **Reschedule flow** — form, participant-only guard, outbound webhook with retry, "My requests" page.
-8. **External API** — service token model, the four endpoints above, minimal test suite.
-9. **Audit & polish** — `django-simple-history`, admin filters for day/person, swap email to Resend.
-10. **Containerise & deploy** — write `Dockerfile` and `docker-compose.yml` (web + Postgres), set up reverse proxy (nginx or Caddy) on the VM with TLS, define backup cron for Postgres volume.
-11. **Deferred (post-v1)** — email notifications (schedule published, reminders, reschedule outcomes), `.ics` download, calendar sync.
+**Locked**
+- App owns scheduling; OR-Tools CP-SAT solver with admin review-and-publish.
+- Availability collected from **panelists only**, **per-timeslot**, with a
+  configurable **minimum number of available slots** per round.
+- Teams meetings pre-created and imported; **no Graph API**.
+- All four email kinds in scope; Notification table is queue + audit; idempotent.
+- **Email transport: Resend** (SMTP, verified domain + SPF/DKIM); console only
+  for local dev.
+- **Deployment: full self-contained `docker compose` stack** — web + worker +
+  cron + **Postgres (in a container, named volume)** + **Caddy (automatic
+  HTTPS)**. Built Docker-first, develop in-container.
+- **CI/CD: GitHub Actions → Docker Hub → SSH deploy to the dev VM** (§11).
+  Build+test on every push/PR; **auto-deploy on push to `main`**; image tagged
+  by commit SHA for rollback.
+- **VM SSH access: key-only (passwords disabled), a dedicated low-privilege
+  deploy user, and fail2ban.** Port is publicly reachable (no GitHub IP
+  allowlist); Tailscale not used.
+- Single-tenant; DB archived after the event.
 
-Estimated effort: 1–2 focused weeks for steps 1–9.
+**Open (confirm before/while building)**
+- The actual `min_available_slots` value per round.
+- Reminder cadence (e.g. day-before + 1h-before?) and preference-reminder
+  frequency.
+- Solver objective weights (preference satisfaction vs compactness).
+- Background queue: Django 6 Tasks framework vs cron + DB-drain (§2).
+- Public domain / DNS for Caddy's automatic HTTPS.
 
 ---
 
-## 9. Decisions Locked
+## 13. Risks
 
-- **Tenancy:** Single-tenant. No `Cohort` table. Database is archived after the event.
-- **Panel size:** Up to 4 panelists per session. List view designed for 4-across; data model still supports any count.
-- **Data retention:** No automated purging. After the event ends, the database is archived in full.
-- **Deployment:** Self-managed Linux VM, Docker container, Postgres in a sibling container, reverse proxy on the host for TLS.
-- **Service-token auth:** Single static bearer token in `SCHEDULER_API_TOKEN` env var.
-
----
-
-## 10. Risks
-
-- **Email deliverability** — magic links landing in spam would lock users out. Mitigation: use a verified domain with Resend (SPF/DKIM), and fall back to an admin-triggered login URL.
-- **CSV drift** — upstream format changes silently. Mitigation: strict schema validation, header check, dry-run mode.
-- **Webhook failures** — external scheduler unreachable when a reschedule is filed. Mitigation: queue requests locally, retry with backoff, surface "pending" state to user.
+- **Email deliverability** — magic links / notices landing in spam locks people
+  out. Mitigation: verified domain + SPF/DKIM via Resend; admin-triggered login
+  URL fallback; never send 300 mails in one request.
+- **CI deploy access** — GitHub-hosted runners come from a broad, shifting IP
+  range, so the VM's SSH can't be allowlisted to "just GitHub" and stays
+  publicly reachable. Mitigation (locked): key-only SSH (passwords disabled), a
+  dedicated low-privilege deploy user, and fail2ban.
+- **Resend volume cap** — the free tier (100/day) is exceeded by one
+  schedule-publish to ~300 people. Mitigation: paid tier, or have the worker
+  throttle sends across the daily cap.
+- **Infeasible schedule** — too little availability to place every interview.
+  Mitigation: solver reports unplaceable interviews + the binding constraint;
+  admin can reopen the round or relax a panel before publishing.
+- **Notification storms / duplicates** — re-running a cron command or a republish
+  re-sending mail. Mitigation: `dedupe_key`; change emails fire only on a real
+  slot diff.
+- **xlsx drift** — upstream meeting-pool format changes silently. Mitigation:
+  strict header check + dry-run (already in the importer).
+```

@@ -349,9 +349,11 @@ push / PR ─► test ─► build & push ─► deploy
 - `collectstatic` runs in the image entrypoint. Compose pins
   `image: ${IMAGE_NAME}:${IMAGE_TAG:-latest}`, so rollback = re-run an older SHA.
 
-**Secrets split**
-- *GitHub* (CI only): `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`, `SSH_PORT?`.
-  The registry uses the automatic `GITHUB_TOKEN` — no Docker registry secret.
+**Secrets / variables split**
+- *GitHub variables* (non-secret): `SSH_HOST`, `SSH_USER`, `SSH_PORT`,
+  `DEPLOY_PATH`.
+- *GitHub secret*: `SSH_PRIVATE_KEY` only. The registry uses the automatic
+  `GITHUB_TOKEN` — no Docker registry secret.
 - *VM `.env`* (app runtime, never in GitHub): `SECRET_KEY`, `RESEND_API_KEY`,
   `POSTGRES_PASSWORD`, `DATABASE_URL`, `SITE_URL`, `ALLOWED_HOSTS`, Caddy domain.
 

@@ -95,19 +95,20 @@ jobs:
         uses: appleboy/ssh-action@v1
         env:
           IMAGE_TAG: ${{ github.sha }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
           # Short-lived run token; the VM logs in to GHCR with it just long
           # enough to pull, so no long-lived registry secret lives on the VM.
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
+          host: ${{ vars.SSH_HOST }}
+          username: ${{ vars.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          envs: IMAGE_NAME,IMAGE_TAG,GHCR_TOKEN,GHCR_USER
+          port: ${{ vars.SSH_PORT }}
+          envs: IMAGE_NAME,IMAGE_TAG,DEPLOY_PATH,GHCR_TOKEN,GHCR_USER
           script: |
             set -eu
-            cd /opt/irp-scheduler
+            cd "$DEPLOY_PATH"
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             export IMAGE_NAME IMAGE_TAG
             docker compose pull

@@ -89,18 +89,27 @@ The image registry is **GitHub Container Registry**. Both build (push) and deplo
 (pull) authenticate with the workflow's built-in `GITHUB_TOKEN`, so **no Docker
 registry secrets are required**.
 
-### Required GitHub secrets
+### Required GitHub configuration
 
-| Secret | Used by |
+Deploy reads connection details from **repository variables** and only the key
+from a **secret**:
+
+| Variable | Example |
 |---|---|
-| `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY` | deploy |
-| `SSH_PORT` | deploy (optional; defaults to 22) |
+| `SSH_HOST` | `vm.example.ac.uk` |
+| `SSH_USER` | `deploy` |
+| `SSH_PORT` | `22` |
+| `DEPLOY_PATH` | `/opt/irp-scheduler` |
 
-`GITHUB_TOKEN` is provided automatically. Deploy runs under a GitHub
-**Environment named `dev`** — create it and (optionally) add a required reviewer.
-The GHCR package starts **private** and linked to the repo; the deploy job logs
-the VM in to `ghcr.io` with the run token just long enough to pull, so no
-long-lived registry credential lives on the VM.
+| Secret | Notes |
+|---|---|
+| `SSH_PRIVATE_KEY` | private key for the deploy user |
+
+`GITHUB_TOKEN` is provided automatically (image push + pull). Deploy runs under a
+GitHub **Environment named `dev`** — create it and (optionally) add a required
+reviewer. The GHCR package starts **private** and linked to the repo; the deploy
+job logs the VM in to `ghcr.io` with the run token just long enough to pull, so
+no long-lived registry credential lives on the VM.
 
 ### One-time VM provisioning
 

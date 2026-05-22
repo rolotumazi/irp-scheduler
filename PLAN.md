@@ -68,7 +68,7 @@ parity), not just at deploy time. Unchanged from v1 except additions marked
 | **Web server (new)** | Gunicorn (in the web container) | Standard Django prod server |
 | **Reverse proxy / TLS (new)** | Caddy container, automatic HTTPS | One-command TLS; no manual cert wrangling |
 | **Orchestration (new)** | `docker compose` (web + worker + cron + Postgres + Caddy) | Full self-contained stack |
-| **CI/CD (new)** | GitHub Actions → **Docker Hub** → SSH deploy to dev VM | Build → test → deploy on push to main (§11) |
+| **CI/CD (new)** | GitHub Actions → **GHCR** → SSH deploy to dev VM | Build → test → deploy on push to main (§11) |
 | Static files | WhiteNoise (in the web container) | No separate static host needed |
 | Timezone | `Europe/London` everywhere | Only supported zone |
 
@@ -317,15 +317,15 @@ and the Teams-pool importer.
 ## 11. CI/CD Pipeline
 
 GitHub Actions, one workflow (`.github/workflows/ci-deploy.yml`), three jobs.
-Registry: **Docker Hub**. Deploy target: the **dev VM**, reached by the
-GitHub-hosted runner over **SSH**. Trigger: **push to `main`** deploys;
-build+test also run on pull requests, but only `main` deploys.
+Registry: **GHCR** (`ghcr.io/<owner>/<repo>`). Deploy target: the **dev VM**,
+reached by the GitHub-hosted runner over **SSH**. Trigger: **push to `main`**
+deploys; build+test also run on pull requests, but only `main` deploys.
 
 ```
 push / PR ─► test ─► build & push ─► deploy
               │         │ (main)       │ (main)
               ▼         ▼              ▼
-        test + migrate  Docker Hub   ssh VM: compose pull,
+        test + migrate  GHCR         ssh VM: login, compose pull,
         on a Postgres   :sha+:latest  migrate, up -d
         service container
 ```
@@ -336,30 +336,30 @@ push / PR ─► test ─► build & push ─► deploy
   Red tests block the pipeline.
 
 **2. `build`** (main only, needs `test`)
-- Buildx → log in to Docker Hub (`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`) →
+- Buildx → log in to GHCR with the built-in `GITHUB_TOKEN` (`packages: write`) →
   build the one app image → push `:${{ github.sha }}` (immutable, for rollback)
   and `:latest`. Layer cache via Actions cache.
 
 **3. `deploy`** (main only, needs `build`)
-- Scoped to a GitHub **Environment `dev`** that holds the deploy secrets.
+- Scoped to a GitHub **Environment `dev`** that holds the SSH secrets.
 - SSH into the VM (`SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`[, `SSH_PORT`]) and,
-  in the deploy directory:
-  `IMAGE_TAG=$SHA docker compose pull` →
-  `docker compose run --rm web manage.py migrate --noinput` →
-  `IMAGE_TAG=$SHA docker compose up -d`.
+  in `/opt/irp-scheduler`: log in to GHCR with the run's `GITHUB_TOKEN`, then
+  `docker compose pull` → `docker compose run --rm web manage.py migrate
+  --noinput` → `docker compose up -d` → `docker logout ghcr.io`.
 - `collectstatic` runs in the image entrypoint. Compose pins
-  `image: <user>/schedule-irp:${IMAGE_TAG:-latest}`, so rollback = re-run an
-  older SHA.
+  `image: ${IMAGE_NAME}:${IMAGE_TAG:-latest}`, so rollback = re-run an older SHA.
 
 **Secrets split**
-- *GitHub* (CI only): `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `SSH_HOST`,
-  `SSH_USER`, `SSH_PRIVATE_KEY`, `SSH_PORT?`.
+- *GitHub* (CI only): `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`, `SSH_PORT?`.
+  The registry uses the automatic `GITHUB_TOKEN` — no Docker registry secret.
 - *VM `.env`* (app runtime, never in GitHub): `SECRET_KEY`, `RESEND_API_KEY`,
   `POSTGRES_PASSWORD`, `DATABASE_URL`, `SITE_URL`, `ALLOWED_HOSTS`, Caddy domain.
 
 **One-time VM provisioning** (manual, documented): install Docker + compose,
 create the deploy user + SSH key, place `docker-compose.yml` + `.env`, point DNS
-at the VM for Caddy. The pipeline assumes this exists.
+at the VM for Caddy. The GHCR package is private and linked to the repo; the
+deploy job authenticates the pull with the short-lived run token. The pipeline
+assumes this exists.
 
 ---
 
@@ -376,9 +376,10 @@ at the VM for Caddy. The pipeline assumes this exists.
 - **Deployment: full self-contained `docker compose` stack** — web + worker +
   cron + **Postgres (in a container, named volume)** + **Caddy (automatic
   HTTPS)**. Built Docker-first, develop in-container.
-- **CI/CD: GitHub Actions → Docker Hub → SSH deploy to the dev VM** (§11).
-  Build+test on every push/PR; **auto-deploy on push to `main`**; image tagged
-  by commit SHA for rollback.
+- **CI/CD: GitHub Actions → GHCR → SSH deploy to the dev VM** (§11). Registry
+  uses the built-in `GITHUB_TOKEN` (no Docker registry secret). Build+test on
+  every push/PR; **auto-deploy on push to `main`**; image tagged by commit SHA
+  for rollback.
 - **VM SSH access: key-only (passwords disabled), a dedicated low-privilege
   deploy user, and fail2ban.** Port is publicly reachable (no GitHub IP
   allowlist); Tailscale not used.

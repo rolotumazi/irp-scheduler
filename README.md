@@ -82,19 +82,25 @@ dev-only; set real values via the VM's `.env` in production.
 `.github/workflows/ci-deploy.yml` — three jobs:
 
 1. **test** (push to `main` + PRs): `ruff`, `makemigrations --check`, `manage.py test` against a Postgres service.
-2. **build** (`main` only): build the image, push `:latest` and `:<sha>` to Docker Hub.
+2. **build** (`main` only): build the image and push `:latest` and `:<sha>` to **GHCR** (`ghcr.io/<owner>/<repo>`).
 3. **deploy** (`main` only): SSH into the dev VM and `compose pull → migrate → up -d`. Rollback = redeploy an older `<sha>`.
+
+The image registry is **GitHub Container Registry**. Both build (push) and deploy
+(pull) authenticate with the workflow's built-in `GITHUB_TOKEN`, so **no Docker
+registry secrets are required**.
 
 ### Required GitHub secrets
 
 | Secret | Used by |
 |---|---|
-| `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` | build (also forms the image name `<user>/schedule-irp`) |
 | `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY` | deploy |
 | `SSH_PORT` | deploy (optional; defaults to 22) |
 
-Deploy runs under a GitHub **Environment named `dev`** — create it and (optionally)
-add a required reviewer there.
+`GITHUB_TOKEN` is provided automatically. Deploy runs under a GitHub
+**Environment named `dev`** — create it and (optionally) add a required reviewer.
+The GHCR package starts **private** and linked to the repo; the deploy job logs
+the VM in to `ghcr.io` with the run token just long enough to pull, so no
+long-lived registry credential lives on the VM.
 
 ### One-time VM provisioning
 
@@ -104,7 +110,7 @@ The pipeline assumes the dev VM already has:
 - A dedicated low-privilege **deploy user** whose public key matches `SSH_PRIVATE_KEY`.
 - **Key-only SSH** (passwords disabled) and **fail2ban** — the SSH port is
   publicly reachable because GitHub-hosted runners use a broad IP range.
-- `/opt/schedule-irp/` containing `docker-compose.yml` and a production `.env`
+- `/opt/irp-scheduler/` containing `docker-compose.yml` and a production `.env`
   (real `SECRET_KEY`, `DATABASE_URL`, `ALLOWED_HOSTS`, `SITE_URL`,
   `POSTGRES_PASSWORD`, and—once wired—Resend credentials).
 - DNS pointed at the VM (for Caddy automatic HTTPS, added in a later phase).

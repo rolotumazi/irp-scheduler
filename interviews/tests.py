@@ -94,6 +94,29 @@ class InterviewTests(TestCase):
         )
         self.assertEqual(interview.status, Interview.Status.SCHEDULED)
 
+    def test_interview_can_be_unscheduled(self):
+        # Interviews exist before the solver places them, so timeslot is optional.
+        interview = Interview.objects.create(
+            external_id='IRP-100',
+            title='Not yet placed',
+            interviewee=self.student,
+        )
+        self.assertIsNone(interview.timeslot)
+
+    def test_multiple_interviews_can_be_unscheduled(self):
+        # NULLs are distinct, so the OneToOne doesn't block several unplaced ones.
+        Interview.objects.create(
+            external_id='IRP-101',
+            title='A',
+            interviewee=self.student,
+        )
+        Interview.objects.create(
+            external_id='IRP-102',
+            title='B',
+            interviewee=make_user('cara@example.ac.uk', User.Role.INTERVIEWEE),
+        )
+        self.assertEqual(Interview.objects.filter(timeslot__isnull=True).count(), 2)
+
 
 class InterviewPanelistTests(TestCase):
     def setUp(self):

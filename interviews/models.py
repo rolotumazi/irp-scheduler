@@ -45,6 +45,8 @@ class Interview(models.Model):
         Timeslot,
         on_delete=models.PROTECT,
         related_name='interview',
+        null=True,
+        blank=True,
     )
     interviewee = models.OneToOneField(
         User,

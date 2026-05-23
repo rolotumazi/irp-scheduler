@@ -16,7 +16,11 @@ environ.Env.read_env(BASE_DIR / '.env')
 
 SECRET_KEY = env('SECRET_KEY', default='django-insecure-dev-only-change-in-prod')
 DEBUG = env('DEBUG')
-ALLOWED_HOSTS = env('ALLOWED_HOSTS')
+
+# Always allow loopback (dedup, order-preserving) so the in-container healthcheck,
+# which hits 127.0.0.1, works even when ALLOWED_HOSTS is locked to the public
+# domain in prod.
+ALLOWED_HOSTS = list(dict.fromkeys([*env('ALLOWED_HOSTS'), '127.0.0.1', 'localhost']))
 
 # Needed once the app sits behind Caddy on an HTTPS domain (CSRF origin check).
 # e.g. CSRF_TRUSTED_ORIGINS=https://schedule.example.ac.uk

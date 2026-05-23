@@ -36,6 +36,14 @@ class HealthCheckTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b'ok')
 
+    def test_loopback_always_in_allowed_hosts(self):
+        # The container healthcheck hits 127.0.0.1; loopback must stay allowed
+        # even when ALLOWED_HOSTS is locked to the public domain in prod,
+        # otherwise the healthcheck gets a 400 and the container shows unhealthy.
+        from django.conf import settings
+        self.assertIn('127.0.0.1', settings.ALLOWED_HOSTS)
+        self.assertIn('localhost', settings.ALLOWED_HOSTS)
+
 
 class ProxySSLTests(TestCase):
     def test_forwarded_proto_https_marks_request_secure(self):

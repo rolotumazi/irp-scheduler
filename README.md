@@ -86,7 +86,7 @@ dev-only; set real values via the VM's `.env` in production.
 
 1. **test** (push to `main` + PRs): `ruff`, `makemigrations --check`, `manage.py test` against a Postgres service.
 2. **build** (`main` only): build the image and push `:latest` and `:<sha>` to **GHCR** (`ghcr.io/<owner>/<repo>`).
-3. **deploy** (`main` only): SSH into the dev VM and `compose pull → migrate → up -d`. Rollback = redeploy an older `<sha>`.
+3. **deploy** (`main` only): `scp` the current `docker-compose.yml` + `Caddyfile` to the VM, then SSH in for `compose pull → migrate → up -d`. Rollback = redeploy an older `<sha>`.
 
 The image registry is **GitHub Container Registry**. Both build (push) and deploy
 (pull) authenticate with the workflow's built-in `GITHUB_TOKEN`, so **no Docker
@@ -122,9 +122,11 @@ The pipeline assumes the dev VM already has:
 - A dedicated low-privilege **deploy user** whose public key matches `SSH_PRIVATE_KEY`.
 - **Key-only SSH** (passwords disabled) and **fail2ban** — the SSH port is
   publicly reachable because GitHub-hosted runners use a broad IP range.
-- `/opt/irp-scheduler/` containing `docker-compose.yml`, `Caddyfile`, and a
-  production `.env` (real `SECRET_KEY`, `DATABASE_URL`, `ALLOWED_HOSTS`,
-  `SITE_URL`, `POSTGRES_PASSWORD`, and—once wired—Resend credentials).
+- `/opt/irp-scheduler/` containing a production `.env` (real `SECRET_KEY`,
+  `DATABASE_URL`, `ALLOWED_HOSTS`, `SITE_URL`, `POSTGRES_PASSWORD`,
+  `COMPOSE_PROFILES=prod`, `CADDY_DOMAIN`, `SECURE_COOKIES=True`, and—once
+  wired—Resend credentials). The deploy job syncs `docker-compose.yml` and
+  `Caddyfile`, so only `.env` is placed by hand.
 - DNS pointed at the VM (Azure's `*.cloudapp.azure.com` name works).
 
 ### HTTPS (Caddy)

@@ -5,7 +5,7 @@ from pathlib import Path
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import IntegrityError
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
 
 from .models import Interview, InterviewPanelist, RescheduleRequest, Timeslot, User
 
@@ -35,6 +35,18 @@ class HealthCheckTests(TestCase):
         response = self.client.get('/healthz')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b'ok')
+
+
+class ProxySSLTests(TestCase):
+    def test_forwarded_proto_https_marks_request_secure(self):
+        # Caddy terminates TLS and forwards X-Forwarded-Proto; Django must trust
+        # it so request.is_secure() is correct behind the proxy.
+        request = RequestFactory().get('/', HTTP_X_FORWARDED_PROTO='https')
+        self.assertTrue(request.is_secure())
+
+    def test_plain_request_is_not_secure(self):
+        request = RequestFactory().get('/')
+        self.assertFalse(request.is_secure())
 
 
 class TimeslotTests(TestCase):

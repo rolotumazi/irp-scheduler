@@ -377,7 +377,10 @@ assumes this exists.
   for local dev.
 - **Deployment: full self-contained `docker compose` stack** — web + worker +
   cron + **Postgres (in a container, named volume)** + **Caddy (automatic
-  HTTPS)**. Built Docker-first, develop in-container.
+  HTTPS)**. Built Docker-first, develop in-container. Caddy was brought forward
+  from Phase 10; the dev VM uses the Azure domain
+  `irp-scheduler.uksouth.cloudapp.azure.com` (Caddy behind the `prod` profile,
+  `web` bound to loopback).
 - **CI/CD: GitHub Actions → GHCR → SSH deploy to the dev VM** (§11). Registry
   uses the built-in `GITHUB_TOKEN` (no Docker registry secret). Build+test on
   every push/PR; **auto-deploy on push to `main`**; image tagged by commit SHA
@@ -393,7 +396,6 @@ assumes this exists.
   frequency.
 - Solver objective weights (preference satisfaction vs compactness).
 - Background queue: Django 6 Tasks framework vs cron + DB-drain (§2).
-- Public domain / DNS for Caddy's automatic HTTPS.
 
 ---
 

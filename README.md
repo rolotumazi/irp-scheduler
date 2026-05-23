@@ -75,7 +75,10 @@ dev-only; set real values via the VM's `.env` in production.
 | `DEFAULT_FROM_EMAIL` | `noreply@schedule-irp.local` | From address. |
 | `POSTGRES_USER` / `_PASSWORD` / `_DB` | `irp` | Used by the `db` service. |
 | `IMAGE_NAME` / `IMAGE_TAG` | `schedule-irp` / `latest` | Image ref for prod pulls. |
-| `WEB_PORT` | `8000` | Host port mapping. |
+| `WEB_PORT` | `8000` | Host port (bound to `127.0.0.1` only). |
+| `COMPOSE_PROFILES` | empty | Set to `prod` on the VM to start Caddy. |
+| `CADDY_DOMAIN` | empty | Public hostname Caddy gets HTTPS for. |
+| `SECURE_COOKIES` | `False` | Set `True` once behind HTTPS (secure session/CSRF cookies). |
 
 ## CI/CD
 
@@ -119,7 +122,26 @@ The pipeline assumes the dev VM already has:
 - A dedicated low-privilege **deploy user** whose public key matches `SSH_PRIVATE_KEY`.
 - **Key-only SSH** (passwords disabled) and **fail2ban** — the SSH port is
   publicly reachable because GitHub-hosted runners use a broad IP range.
-- `/opt/irp-scheduler/` containing `docker-compose.yml` and a production `.env`
-  (real `SECRET_KEY`, `DATABASE_URL`, `ALLOWED_HOSTS`, `SITE_URL`,
-  `POSTGRES_PASSWORD`, and—once wired—Resend credentials).
-- DNS pointed at the VM (for Caddy automatic HTTPS, added in a later phase).
+- `/opt/irp-scheduler/` containing `docker-compose.yml`, `Caddyfile`, and a
+  production `.env` (real `SECRET_KEY`, `DATABASE_URL`, `ALLOWED_HOSTS`,
+  `SITE_URL`, `POSTGRES_PASSWORD`, and—once wired—Resend credentials).
+- DNS pointed at the VM (Azure's `*.cloudapp.azure.com` name works).
+
+### HTTPS (Caddy)
+
+Caddy runs behind the `prod` compose profile and gets an automatic Let's Encrypt
+certificate for `CADDY_DOMAIN`. To enable it on the VM, the `.env` adds:
+
+```ini
+COMPOSE_PROFILES=prod
+CADDY_DOMAIN=irp-scheduler.uksouth.cloudapp.azure.com
+SECURE_COOKIES=True
+ALLOWED_HOSTS=irp-scheduler.uksouth.cloudapp.azure.com
+SITE_URL=https://irp-scheduler.uksouth.cloudapp.azure.com
+CSRF_TRUSTED_ORIGINS=https://irp-scheduler.uksouth.cloudapp.azure.com
+```
+
+Requires NSG inbound **80** and **443** (80 is needed for the ACME challenge and
+the HTTP→HTTPS redirect). Caddy proxies to the internal `web` service; `web` is
+bound to `127.0.0.1` only, so it's never exposed directly. Certificates persist
+in the `caddy_data` volume.

@@ -22,6 +22,16 @@ ALLOWED_HOSTS = env('ALLOWED_HOSTS')
 # e.g. CSRF_TRUSTED_ORIGINS=https://schedule.example.ac.uk
 CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])
 
+# Behind Caddy (the TLS terminator): trust its X-Forwarded-Proto header so
+# request.is_secure() and HTTPS URL building are correct. Caddy is the only
+# thing that sets this header in our topology.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Send session/CSRF cookies over HTTPS only. Enable (SECURE_COOKIES=True) on the
+# VM together with Caddy; defaults off so plain-HTTP dev still works.
+SESSION_COOKIE_SECURE = env.bool('SECURE_COOKIES', default=False)
+CSRF_COOKIE_SECURE = env.bool('SECURE_COOKIES', default=False)
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',

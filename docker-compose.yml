@@ -1,11 +1,11 @@
 name: schedule-irp
 
-# Phase 1 stack: the web app + Postgres. The worker, cron, and Caddy services
-# are added in later phases as the subsystems that need them land.
+# Stack: web app + Postgres, with Caddy (automatic HTTPS) behind the `prod`
+# profile. The worker and cron services are added in later phases.
 #
-# Dev:  `docker compose up --build`  (sane defaults below, no .env required)
-# Prod: supply real values via .env (and IMAGE_NAME/IMAGE_TAG), then
-#       `docker compose pull && docker compose up -d`.
+# Dev:  `docker compose up --build`         (web on localhost:8000, no Caddy/TLS)
+# Prod: set COMPOSE_PROFILES=prod + CADDY_DOMAIN in .env, then
+#       `docker compose pull && docker compose up -d`  (Caddy serves 80/443).
 
 services:
   db:
@@ -35,8 +35,10 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgres://irp:irp@db:5432/irp}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
       SITE_URL: ${SITE_URL:-http://127.0.0.1:8000}
+    # Loopback only: local dev reaches it at localhost:8000; in prod Caddy
+    # proxies to it over the compose network, so it's never exposed publicly.
     ports:
-      - "${WEB_PORT:-8000}:8000"
+      - "127.0.0.1:${WEB_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -48,5 +50,23 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["prod"]              # only runs when COMPOSE_PROFILES=prod
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data           # certificates — must persist across restarts
+      - caddy_config:/config
+    depends_on:
+      - web
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

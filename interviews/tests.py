@@ -242,3 +242,97 @@ class ImportTimeslotsCommandTests(TestCase):
         with self.assertRaises(CommandError):
             call_command('import_timeslots', str(self.path))
         self.assertEqual(Timeslot.objects.count(), 0)
+
+
+INTERVIEW_HEADERS = ('ExternalID', 'Title', 'IntervieweeEmail', 'PanelistEmails')
+
+
+class ImportInterviewsCommandTests(TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / 'interviews.xlsx'
+        self.amir = make_user('amir@example.ac.uk', User.Role.INTERVIEWEE)
+        self.bea = make_user('bea@example.ac.uk', User.Role.INTERVIEWEE)
+        self.grace = make_user('grace@example.ac.uk', User.Role.INTERVIEWER)
+        self.alan = make_user('alan@example.ac.uk', User.Role.INTERVIEWER)
+
+    def _write(self, rows, headers=INTERVIEW_HEADERS):
+        _write_xlsx(self.path, rows, headers=headers, sheet='Interviews')
+
+    def _sample_rows(self):
+        return [
+            ('IRP-001', 'Quantum foo', 'amir@example.ac.uk', 'grace@example.ac.uk;alan@example.ac.uk'),
+            ('IRP-002', 'Bar baz', 'bea@example.ac.uk', 'grace@example.ac.uk'),
+        ]
+
+    def test_creates_interviews_with_panels_unscheduled(self):
+        self._write(self._sample_rows())
+        call_command('import_interviews', str(self.path))
+
+        self.assertEqual(Interview.objects.count(), 2)
+        i1 = Interview.objects.get(external_id='IRP-001')
+        self.assertIsNone(i1.timeslot)
+        self.assertEqual(i1.interviewee, self.amir)
+        self.assertEqual(i1.status, Interview.Status.SCHEDULED)
+        self.assertEqual(set(i1.panelists.all()), {self.grace, self.alan})
+
+    def test_idempotent_reimport_updates_title_and_panel(self):
+        self._write(self._sample_rows())
+        call_command('import_interviews', str(self.path))
+
+        self._write([
+            ('IRP-001', 'Quantum foo v2', 'amir@example.ac.uk', 'alan@example.ac.uk'),
+            ('IRP-002', 'Bar baz', 'bea@example.ac.uk', 'grace@example.ac.uk'),
+        ])
+        call_command('import_interviews', str(self.path))
+
+        self.assertEqual(Interview.objects.count(), 2)
+        i1 = Interview.objects.get(external_id='IRP-001')
+        self.assertEqual(i1.title, 'Quantum foo v2')
+        self.assertEqual(set(i1.panelists.all()), {self.alan})
+
+    def test_unknown_interviewee_aborts(self):
+        self._write([('IRP-001', 'T', 'nobody@example.ac.uk', 'grace@example.ac.uk')])
+        with self.assertRaises(CommandError):
+            call_command('import_interviews', str(self.path))
+        self.assertEqual(Interview.objects.count(), 0)
+
+    def test_interviewee_must_have_interviewee_role(self):
+        # grace is an interviewer, not an interviewee.
+        self._write([('IRP-001', 'T', 'grace@example.ac.uk', 'alan@example.ac.uk')])
+        with self.assertRaises(CommandError):
+            call_command('import_interviews', str(self.path))
+        self.assertEqual(Interview.objects.count(), 0)
+
+    def test_unknown_panelist_aborts(self):
+        self._write([('IRP-001', 'T', 'amir@example.ac.uk', 'ghost@example.ac.uk')])
+        with self.assertRaises(CommandError):
+            call_command('import_interviews', str(self.path))
+        self.assertEqual(Interview.objects.count(), 0)
+
+    def test_panelist_must_have_interviewer_role(self):
+        # bea is an interviewee, not an interviewer.
+        self._write([('IRP-001', 'T', 'amir@example.ac.uk', 'bea@example.ac.uk')])
+        with self.assertRaises(CommandError):
+            call_command('import_interviews', str(self.path))
+        self.assertEqual(Interview.objects.count(), 0)
+
+    def test_duplicate_interviewee_in_file_aborts(self):
+        self._write([
+            ('IRP-001', 'A', 'amir@example.ac.uk', 'grace@example.ac.uk'),
+            ('IRP-002', 'B', 'amir@example.ac.uk', 'alan@example.ac.uk'),
+        ])
+        with self.assertRaises(CommandError):
+            call_command('import_interviews', str(self.path))
+        self.assertEqual(Interview.objects.count(), 0)
+
+    def test_missing_column_aborts(self):
+        self._write([('IRP-001', 'T')], headers=('ExternalID', 'Title'))
+        with self.assertRaises(CommandError):
+            call_command('import_interviews', str(self.path))
+
+    def test_dry_run_writes_nothing(self):
+        self._write(self._sample_rows())
+        call_command('import_interviews', str(self.path), '--dry-run')
+        self.assertEqual(Interview.objects.count(), 0)

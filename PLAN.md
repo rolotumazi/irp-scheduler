@@ -263,10 +263,12 @@ custom admin views / actions rather than separate public routes.
   (`MeetingID, Date, DayLabel, StartTime, EndTime, JoinUrl, Status`). Importer
   exists: `manage.py import_timeslots`. Only rows with `Status=Created` and a
   `JoinUrl` get a live link.
-- **Interviews + panels** → `Interview` + `InterviewPanelist`. Needs an importer
-  (CSV/xlsx): `external_id, title, interviewee_email, panelist_emails` (no time —
-  the solver assigns that). Users referenced must already exist; abort with a
-  per-row error report on unknown email.
+- **Interviews + panels** → `Interview` + `InterviewPanelist`. Importer exists:
+  `manage.py import_interviews` (xlsx, sheet `Interviews`, columns
+  `ExternalID, Title, IntervieweeEmail, PanelistEmails`; `PanelistEmails` is
+  semicolon-separated). No time — the solver assigns that. Role-validated
+  (interviewee/interviewer), idempotent by `ExternalID`, `--dry-run`; aborts with
+  a per-row error report on unknown/wrong-role email or duplicate interviewee.
 
 ---
 

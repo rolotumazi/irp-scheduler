@@ -32,6 +32,7 @@ Useful one-offs:
 docker compose exec web python manage.py createsuperuser
 docker compose exec web python manage.py seed_users        # test users (idempotent)
 docker compose exec web python manage.py import_timeslots <path-to.xlsx> [--dry-run]
+docker compose exec web python manage.py import_interviews <path-to.xlsx> [--dry-run]
 docker compose down                # stop (add -v to also drop the Postgres volume)
 ```
 

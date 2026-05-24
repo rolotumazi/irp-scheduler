@@ -4,12 +4,25 @@ from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from .models import (
     Interview,
     InterviewPanelist,
+    Notification,
     PanelistAvailability,
     PreferenceRound,
     RescheduleRequest,
     Timeslot,
     User,
 )
+from .notifications import enqueue_preference_request
+
+
+@admin.action(description='Queue preference-request emails to panelists')
+def queue_preference_requests(modeladmin, request, queryset):
+    interviewers = list(User.objects.filter(role=User.Role.INTERVIEWER, is_active=True))
+    total = 0
+    for round_obj in queryset:
+        for user in interviewers:
+            _, created = enqueue_preference_request(round_obj, user)
+            total += created
+    modeladmin.message_user(request, f'{total} preference-request email(s) queued.')
 
 
 @admin.register(User)
@@ -58,6 +71,15 @@ class PreferenceRoundAdmin(admin.ModelAdmin):
     list_display = ('name', 'status', 'opens_at', 'closes_at', 'min_available_slots')
     list_filter = ('status',)
     search_fields = ('name',)
+    actions = [queue_preference_requests]
+
+
+@admin.register(Notification)
+class NotificationAdmin(admin.ModelAdmin):
+    list_display = ('kind', 'recipient', 'status', 'created_at', 'sent_at')
+    list_filter = ('kind', 'status')
+    search_fields = ('recipient__email', 'subject', 'dedupe_key')
+    readonly_fields = ('created_at', 'sent_at')
 
 
 @admin.register(PanelistAvailability)

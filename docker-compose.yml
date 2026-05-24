@@ -7,6 +7,15 @@ name: schedule-irp
 # Prod: set COMPOSE_PROFILES=prod + CADDY_DOMAIN in .env, then
 #       `docker compose pull && docker compose up -d`  (Caddy serves 80/443).
 
+# Shared app environment for the web and worker containers (same image).
+# Email + Resend settings come from .env on top of these.
+x-app-env: &app-env
+  DEBUG: ${DEBUG:-True}
+  SECRET_KEY: ${SECRET_KEY:-django-insecure-dev-only-change-in-prod}
+  DATABASE_URL: ${DATABASE_URL:-postgres://irp:irp@db:5432/irp}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+  SITE_URL: ${SITE_URL:-http://127.0.0.1:8000}
+
 services:
   db:
     image: postgres:17-alpine
@@ -29,12 +38,7 @@ services:
     env_file:
       - path: .env
         required: false
-    environment:
-      DEBUG: ${DEBUG:-True}
-      SECRET_KEY: ${SECRET_KEY:-django-insecure-dev-only-change-in-prod}
-      DATABASE_URL: ${DATABASE_URL:-postgres://irp:irp@db:5432/irp}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
-      SITE_URL: ${SITE_URL:-http://127.0.0.1:8000}
+    environment: *app-env
     # Loopback only: local dev reaches it at localhost:8000; in prod Caddy
     # proxies to it over the compose network, so it's never exposed publicly.
     ports:
@@ -48,6 +52,19 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    image: ${IMAGE_NAME:-schedule-irp}:${IMAGE_TAG:-latest}
+    build: .
+    command: ["python", "manage.py", "run_worker"]
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-env
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
   caddy:

@@ -98,7 +98,19 @@ LOGIN_URL = 'interviews:login_request'
 LOGIN_REDIRECT_URL = 'interviews:home'
 LOGOUT_REDIRECT_URL = 'interviews:home'
 
-EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
+# SMTP (e.g. Resend: EMAIL_HOST=smtp.resend.com, EMAIL_HOST_USER=resend,
+# EMAIL_HOST_PASSWORD=<api key>). With no EMAIL_HOST we fall back to the console
+# backend, so local dev needs no mail config.
+EMAIL_HOST = env('EMAIL_HOST', default='')
+EMAIL_PORT = env.int('EMAIL_PORT', default=587)
+EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
+EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)
+_default_email_backend = (
+    'django.core.mail.backends.smtp.EmailBackend' if EMAIL_HOST
+    else 'django.core.mail.backends.console.EmailBackend'
+)
+EMAIL_BACKEND = env('EMAIL_BACKEND', default=_default_email_backend)
 DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='noreply@schedule-irp.local')
 SITE_URL = env('SITE_URL', default='http://127.0.0.1:8000')
 

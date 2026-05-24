@@ -1,0 +1,11 @@
+Hello {{ user.get_full_name|default:user.email }},
+
+A quick reminder: we don't yet have your availability for "{{ round.name }}".
+{% if round.min_available_slots %}Please mark at least {{ round.min_available_slots }} timeslots you can attend.{% endif %}
+
+Sign in and complete your availability form here:
+
+{{ link }}
+
+Thanks,
+Schedule IRP

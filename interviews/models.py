@@ -197,3 +197,42 @@ class PanelistAvailability(models.Model):
 
     def __str__(self):
         return f'{self.panelist.email} {self.state} @ {self.timeslot.slot_ref}'
+
+
+class Notification(models.Model):
+    """Outbound email queue + audit log. dedupe_key makes enqueueing idempotent."""
+
+    class Kind(models.TextChoices):
+        PREFERENCE_REQUEST = 'preference_request', 'Preference request'
+        PREFERENCE_REMINDER = 'preference_reminder', 'Preference reminder'
+        SCHEDULE_CHANGE = 'schedule_change', 'Schedule change'
+        SESSION_REMINDER = 'session_reminder', 'Session reminder'
+        RESCHEDULE_OUTCOME = 'reschedule_outcome', 'Reschedule outcome'
+
+    class Status(models.TextChoices):
+        QUEUED = 'queued', 'Queued'
+        SENT = 'sent', 'Sent'
+        FAILED = 'failed', 'Failed'
+
+    recipient = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications')
+    kind = models.CharField(max_length=24, choices=Kind.choices)
+    subject = models.CharField(max_length=255)
+    body = models.TextField()
+    status = models.CharField(max_length=8, choices=Status.choices, default=Status.QUEUED)
+    dedupe_key = models.CharField(max_length=200, unique=True)
+    interview = models.ForeignKey(
+        Interview, null=True, blank=True, on_delete=models.SET_NULL, related_name='notifications',
+    )
+    round = models.ForeignKey(
+        PreferenceRound, null=True, blank=True, on_delete=models.SET_NULL, related_name='notifications',
+    )
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['status'])]
+
+    def __str__(self):
+        return f'{self.kind} to {self.recipient.email} ({self.status})'

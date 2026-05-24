@@ -11,8 +11,6 @@ from django.db import transaction
 from django.db.models import Count, F, Min, Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.urls import reverse
-from sesame.utils import get_query_string
 
 from .forms import LoginRequestForm
 from .models import (
@@ -23,6 +21,7 @@ from .models import (
     Timeslot,
     User,
 )
+from .notifications import build_login_link
 
 
 def healthz(request):
@@ -206,9 +205,7 @@ def logout_view(request):
 
 
 def _send_magic_link(user, request):
-    query_string = get_query_string(user)
-    path = reverse('interviews:login_consume')
-    link = f'{settings.SITE_URL}{path}{query_string}'
+    link = build_login_link(user)
 
     send_mail(
         subject='Your Schedule IRP sign-in link',

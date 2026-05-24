@@ -1,0 +1,14 @@
+Hello {{ user.get_full_name|default:user.email }},
+
+Please tell us when you're available to sit on interview panels for
+"{{ round.name }}".
+{% if round.min_available_slots %}Mark at least {{ round.min_available_slots }} timeslots you can attend.{% endif %}
+
+Use this link to sign in and open your availability form:
+
+{{ link }}
+
+The link signs you in automatically and expires after a short while.
+
+Thanks,
+Schedule IRP

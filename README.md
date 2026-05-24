@@ -72,14 +72,44 @@ dev-only; set real values via the VM's `.env` in production.
 | `CSRF_TRUSTED_ORIGINS` | empty | e.g. `https://schedule.example.ac.uk` (needed behind Caddy). |
 | `DATABASE_URL` | SQLite file | `postgres://USER:PASS@db:5432/NAME` in the stack. |
 | `SITE_URL` | `http://127.0.0.1:8000` | Base URL used in magic-link emails. |
-| `EMAIL_BACKEND` | console | Resend SMTP backend wired in with the notification engine (later phase). |
-| `DEFAULT_FROM_EMAIL` | `noreply@schedule-irp.local` | From address. |
+| `EMAIL_HOST` | empty | SMTP host (e.g. `smtp.resend.com`). Empty → console backend. |
+| `EMAIL_PORT` / `EMAIL_USE_TLS` | `587` / `True` | SMTP transport. |
+| `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` | empty | For Resend: `resend` / your API key. |
+| `EMAIL_BACKEND` | auto | SMTP if `EMAIL_HOST` set, else console. Override only if needed. |
+| `DEFAULT_FROM_EMAIL` | `noreply@schedule-irp.local` | From address (must match a verified domain in prod). |
 | `POSTGRES_USER` / `_PASSWORD` / `_DB` | `irp` | Used by the `db` service. |
 | `IMAGE_NAME` / `IMAGE_TAG` | `schedule-irp` / `latest` | Image ref for prod pulls. |
 | `WEB_PORT` | `8000` | Host port (bound to `127.0.0.1` only). |
 | `COMPOSE_PROFILES` | empty | Set to `prod` on the VM to start Caddy. |
 | `CADDY_DOMAIN` | empty | Public hostname Caddy gets HTTPS for. |
 | `SECURE_COOKIES` | `False` | Set `True` once behind HTTPS (secure session/CSRF cookies). |
+
+## Email & notifications
+
+Automated email goes through a `Notification` table (queue + audit, idempotent via
+`dedupe_key`). The **`worker`** compose service runs `manage.py run_worker`, which
+loops: enqueue due preference reminders, then send all queued notifications via the
+email backend. Magic-link sign-in emails are sent synchronously by the web app.
+
+Relevant commands (also runnable by hand):
+```bash
+docker compose exec web python manage.py enqueue_preference_requests <round_id>
+docker compose exec web python manage.py enqueue_preference_reminders
+docker compose exec web python manage.py send_notifications
+```
+(Or use the **"Queue preference-request emails"** action on `PreferenceRound` in the admin.)
+
+**Resend setup.** Add to the VM `.env`:
+```ini
+EMAIL_HOST=smtp.resend.com
+EMAIL_HOST_USER=resend
+EMAIL_HOST_PASSWORD=<your-resend-api-key>
+DEFAULT_FROM_EMAIL=Schedule IRP <noreply@your-verified-domain>
+```
+> **Domain caveat:** Resend only delivers to arbitrary recipients from a **domain you
+> verify** (SPF/DKIM). The Azure `*.cloudapp.azure.com` name can't be verified, so for
+> testing use Resend's `onboarding@resend.dev` (to your own account email only) or a
+> Mailtrap sandbox (`EMAIL_HOST=sandbox.smtp.mailtrap.io`).
 
 ## CI/CD
 

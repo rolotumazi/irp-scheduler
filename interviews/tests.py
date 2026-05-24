@@ -2,6 +2,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from django.core import mail
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import IntegrityError
@@ -12,12 +13,14 @@ from django.utils import timezone as django_tz
 from .models import (
     Interview,
     InterviewPanelist,
+    Notification,
     PanelistAvailability,
     PreferenceRound,
     RescheduleRequest,
     Timeslot,
     User,
 )
+from .notifications import enqueue_preference_request
 
 
 def make_slot(ref='W1D1-0930-01', room='Room 1', offset_hours=0, day_label='W1D1-Tue'):
@@ -543,3 +546,76 @@ class RoundResponsesViewTests(TestCase):
         self.assertContains(response, 'alan@example.ac.uk')  # listed even though not responded
         # 1 of 2 interviewers responded
         self.assertContains(response, '1')
+
+
+class NotificationTests(TestCase):
+    def setUp(self):
+        self.grace = make_user('grace@example.ac.uk', User.Role.INTERVIEWER)
+        self.alan = make_user('alan@example.ac.uk', User.Role.INTERVIEWER)
+        self.amir = make_user('amir@example.ac.uk', User.Role.INTERVIEWEE)
+        self.s1 = make_slot('S-1', 'Room 1')
+
+    def test_enqueue_is_idempotent(self):
+        round_obj = make_open_round()
+        enqueue_preference_request(round_obj, self.grace)
+        enqueue_preference_request(round_obj, self.grace)
+        self.assertEqual(Notification.objects.filter(recipient=self.grace).count(), 1)
+
+    def test_preference_request_has_magic_link_to_form(self):
+        round_obj = make_open_round()
+        note, _ = enqueue_preference_request(round_obj, self.grace)
+        self.assertIn('sesame', note.body)
+        self.assertIn(f'/availability/{round_obj.pk}/', note.body)
+
+    def test_send_notifications_delivers_and_marks_sent(self):
+        round_obj = make_open_round()
+        enqueue_preference_request(round_obj, self.grace)
+        mail.outbox.clear()
+        call_command('send_notifications')
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ['grace@example.ac.uk'])
+        note = Notification.objects.get(recipient=self.grace)
+        self.assertEqual(note.status, Notification.Status.SENT)
+        self.assertIsNotNone(note.sent_at)
+
+    def test_send_notifications_does_not_resend(self):
+        round_obj = make_open_round()
+        enqueue_preference_request(round_obj, self.grace)
+        call_command('send_notifications')
+        mail.outbox.clear()
+        call_command('send_notifications')  # nothing queued now
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_enqueue_requests_command_covers_all_interviewers(self):
+        round_obj = make_open_round()
+        call_command('enqueue_preference_requests', round_obj.pk)
+        recipients = set(Notification.objects.values_list('recipient__email', flat=True))
+        self.assertEqual(recipients, {'grace@example.ac.uk', 'alan@example.ac.uk'})
+
+    def test_reminders_target_only_non_responders(self):
+        now = django_tz.now()
+        round_obj = make_open_round(
+            opens_at=now - timedelta(days=2), closes_at=now + timedelta(days=1),
+        )
+        PanelistAvailability.objects.create(round=round_obj, panelist=self.grace, timeslot=self.s1)
+        call_command('enqueue_preference_reminders')
+        reminded = set(
+            Notification.objects
+            .filter(kind=Notification.Kind.PREFERENCE_REMINDER)
+            .values_list('recipient__email', flat=True)
+        )
+        self.assertEqual(reminded, {'alan@example.ac.uk'})
+
+    def test_reminders_skip_recently_opened_rounds(self):
+        make_open_round(opens_at=django_tz.now() - timedelta(hours=1))
+        call_command('enqueue_preference_reminders')
+        self.assertEqual(
+            Notification.objects.filter(kind=Notification.Kind.PREFERENCE_REMINDER).count(), 0,
+        )
+
+    def test_run_worker_once_sends_queued(self):
+        round_obj = make_open_round()
+        enqueue_preference_request(round_obj, self.grace)
+        mail.outbox.clear()
+        call_command('run_worker', '--once')
+        self.assertEqual(len(mail.outbox), 1)

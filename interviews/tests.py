@@ -6,15 +6,16 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import IntegrityError
 from django.test import RequestFactory, TestCase
+from django.urls import reverse
 
 from .models import Interview, InterviewPanelist, RescheduleRequest, Timeslot, User
 
 
-def make_slot(ref='W1D1-0930-01', room='Room 1', offset_hours=0):
+def make_slot(ref='W1D1-0930-01', room='Room 1', offset_hours=0, day_label='W1D1-Tue'):
     start = datetime(2026, 9, 1, 9, 30, tzinfo=timezone.utc) + timedelta(hours=offset_hours)
     return Timeslot.objects.create(
         slot_ref=ref,
-        day_label='W1D1-Tue',
+        day_label=day_label,
         start_at=start,
         end_at=start + timedelta(minutes=30),
         room_label=room,
@@ -336,3 +337,88 @@ class ImportInterviewsCommandTests(TestCase):
         self._write(self._sample_rows())
         call_command('import_interviews', str(self.path), '--dry-run')
         self.assertEqual(Interview.objects.count(), 0)
+
+
+class ScheduleViewTests(TestCase):
+    def setUp(self):
+        self.amir = make_user('amir@example.ac.uk', User.Role.INTERVIEWEE)
+        self.bea = make_user('bea@example.ac.uk', User.Role.INTERVIEWEE)
+        self.grace = make_user('grace@example.ac.uk', User.Role.INTERVIEWER)
+        self.alan = make_user('alan@example.ac.uk', User.Role.INTERVIEWER)
+
+        self.slot1 = make_slot('W1D1-0930-01', 'Room 1', offset_hours=0, day_label='W1D1-Tue')
+        self.slot2 = make_slot('W1D2-0930-01', 'Room 1', offset_hours=24, day_label='W1D2-Wed')
+
+        self.i1 = Interview.objects.create(
+            external_id='IRP-001', title='Quantum foo', timeslot=self.slot1, interviewee=self.amir,
+        )
+        InterviewPanelist.objects.create(interview=self.i1, user=self.grace)
+        InterviewPanelist.objects.create(interview=self.i1, user=self.alan)
+
+        self.i2 = Interview.objects.create(
+            external_id='IRP-002', title='Bar baz', timeslot=self.slot2, interviewee=self.bea,
+        )
+        InterviewPanelist.objects.create(interview=self.i2, user=self.grace)
+
+    # --- home / my sessions ---
+    def test_home_anonymous_shows_signin_not_sessions(self):
+        response = self.client.get(reverse('interviews:home'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Sign in')
+        self.assertNotContains(response, 'Quantum foo')
+
+    def test_home_interviewee_sees_only_their_session(self):
+        self.client.force_login(self.amir)
+        response = self.client.get(reverse('interviews:home'))
+        self.assertContains(response, 'Quantum foo')
+        self.assertNotContains(response, 'Bar baz')
+
+    def test_home_panelist_sees_all_their_sessions(self):
+        self.client.force_login(self.grace)
+        response = self.client.get(reverse('interviews:home'))
+        self.assertContains(response, 'Quantum foo')
+        self.assertContains(response, 'Bar baz')
+
+    # --- full schedule ---
+    def test_schedule_requires_login(self):
+        response = self.client.get(reverse('interviews:schedule_list'))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login', response.url)
+
+    def test_schedule_lists_all_with_teams_link(self):
+        self.client.force_login(self.amir)
+        response = self.client.get(reverse('interviews:schedule_list'))
+        self.assertContains(response, 'Quantum foo')
+        self.assertContains(response, 'Bar baz')
+        self.assertContains(response, 'teams.microsoft.com')
+
+    def test_schedule_filter_by_day(self):
+        self.client.force_login(self.amir)
+        response = self.client.get(reverse('interviews:schedule_list'), {'day': 'W1D2-Wed'})
+        self.assertContains(response, 'Bar baz')
+        self.assertNotContains(response, 'Quantum foo')
+
+    def test_schedule_filter_by_person(self):
+        self.client.force_login(self.amir)
+        response = self.client.get(reverse('interviews:schedule_list'), {'person': 'alan@example.ac.uk'})
+        self.assertContains(response, 'Quantum foo')
+        self.assertNotContains(response, 'Bar baz')
+
+    # --- session detail ---
+    def test_detail_requires_login(self):
+        response = self.client.get(reverse('interviews:schedule_detail', args=[self.i1.pk]))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login', response.url)
+
+    def test_detail_shows_panel_and_teams_link(self):
+        self.client.force_login(self.amir)
+        response = self.client.get(reverse('interviews:schedule_detail', args=[self.i1.pk]))
+        self.assertContains(response, 'Quantum foo')
+        self.assertContains(response, 'grace@example.ac.uk')
+        self.assertContains(response, 'alan@example.ac.uk')
+        self.assertContains(response, 'teams.microsoft.com')
+
+    def test_detail_404_for_missing(self):
+        self.client.force_login(self.amir)
+        response = self.client.get(reverse('interviews:schedule_detail', args=[999999]))
+        self.assertEqual(response.status_code, 404)

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}{{ interview.title }} — Schedule IRP{% endblock %}
+
+{% block content %}
+  <p><a href="{% url 'interviews:schedule_list' %}">← Full schedule</a></p>
+
+  <h2>{{ interview.title }}</h2>
+  <p class="muted">Status: {{ interview.get_status_display }}</p>
+
+  {% if interview.timeslot %}
+    <p>
+      <strong>{{ interview.timeslot.start_at|date:"l j F Y, H:i" }}–{{ interview.timeslot.end_at|date:"H:i" }}</strong>
+      ({{ interview.timeslot.day_label }})<br>
+      Room: {{ interview.timeslot.room_label }}
+    </p>
+    {% if interview.timeslot.teams_link %}
+      <p><a href="{{ interview.timeslot.teams_link }}">Join the Teams meeting</a></p>
+    {% endif %}
+  {% else %}
+    <p>Not yet scheduled.</p>
+  {% endif %}
+
+  <h3>Interviewee</h3>
+  <p>{{ interview.interviewee.get_full_name|default:interview.interviewee.email }}
+     &lt;{{ interview.interviewee.email }}&gt;</p>
+
+  <h3>Panel</h3>
+  <ul>
+    {% for p in interview.panelists.all %}
+      <li>{{ p.get_full_name|default:p.email }} &lt;{{ p.email }}&gt;</li>
+    {% empty %}
+      <li class="muted">No panel assigned yet.</li>
+    {% endfor %}
+  </ul>
+{% endblock %}

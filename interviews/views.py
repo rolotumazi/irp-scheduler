@@ -1,13 +1,15 @@
 from django.conf import settings
 from django.contrib.auth import logout
+from django.contrib.auth.decorators import login_required
 from django.core.mail import send_mail
+from django.db.models import F, Min, Q
 from django.http import HttpResponse
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from sesame.utils import get_query_string
 
 from .forms import LoginRequestForm
-from .models import User
+from .models import Interview, InterviewPanelist, Timeslot, User
 
 
 def healthz(request):
@@ -15,8 +17,74 @@ def healthz(request):
     return HttpResponse('ok', content_type='text/plain')
 
 
+def _ordered_by_start(qs):
+    # Unscheduled interviews (timeslot is NULL) sort last, deterministically
+    # across SQLite and Postgres.
+    return qs.order_by(F('timeslot__start_at').asc(nulls_last=True))
+
+
 def home(request):
-    return render(request, 'interviews/home.html')
+    sessions = None
+    if request.user.is_authenticated:
+        # Membership via a subquery (not an M2M join) so we avoid duplicate rows
+        # and the Postgres "SELECT DISTINCT + ORDER BY joined column" error.
+        panel_ids = InterviewPanelist.objects.filter(user=request.user).values('interview_id')
+        sessions = _ordered_by_start(
+            Interview.objects
+            .filter(Q(interviewee=request.user) | Q(pk__in=panel_ids))
+            .select_related('timeslot', 'interviewee')
+            .prefetch_related('panelists')
+        )
+    return render(request, 'interviews/home.html', {'sessions': sessions})
+
+
+@login_required
+def schedule_list(request):
+    interviews = (
+        Interview.objects
+        .select_related('timeslot', 'interviewee')
+        .prefetch_related('panelists')
+    )
+
+    day = request.GET.get('day', '').strip()
+    person = request.GET.get('person', '').strip()
+
+    if day:
+        interviews = interviews.filter(timeslot__day_label=day)
+    if person:
+        panel_match = InterviewPanelist.objects.filter(
+            Q(user__email__icontains=person) | Q(user__last_name__icontains=person)
+        ).values('interview_id')
+        interviews = interviews.filter(
+            Q(interviewee__email__icontains=person)
+            | Q(interviewee__last_name__icontains=person)
+            | Q(pk__in=panel_match)
+        )
+
+    # Distinct day labels, ordered by when that day starts (GROUP BY day_label,
+    # ORDER BY min(start_at)) — avoids the DISTINCT+ORDER BY pitfall.
+    days = [
+        row['day_label']
+        for row in Timeslot.objects.values('day_label')
+        .annotate(first_start=Min('start_at'))
+        .order_by('first_start')
+    ]
+
+    return render(request, 'interviews/schedule_list.html', {
+        'interviews': _ordered_by_start(interviews),
+        'days': days,
+        'day': day,
+        'person': person,
+    })
+
+
+@login_required
+def schedule_detail(request, pk):
+    interview = get_object_or_404(
+        Interview.objects.select_related('timeslot', 'interviewee').prefetch_related('panelists'),
+        pk=pk,
+    )
+    return render(request, 'interviews/schedule_detail.html', {'interview': interview})
 
 
 def login_request(request):

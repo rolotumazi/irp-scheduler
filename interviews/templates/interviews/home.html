@@ -4,13 +4,37 @@
 
 {% block content %}
   {% if user.is_authenticated %}
-    <h2>Welcome, {{ user.get_full_name|default:user.email }}</h2>
-    <p>Role: <strong>{{ user.get_role_display }}</strong></p>
-    <p>The schedule will appear here once it's published.</p>
-    <p><a href="{% url 'interviews:logout' %}">Sign out</a></p>
+    <h2>Your sessions</h2>
+    <p class="muted">
+      Signed in as {{ user.get_full_name|default:user.email }} ({{ user.get_role_display }}).
+    </p>
+
+    {% if sessions %}
+      <ul class="sessions">
+        {% for interview in sessions %}
+          <li>
+            {% if interview.timeslot %}
+              <strong>{{ interview.timeslot.start_at|date:"D j M Y, H:i" }}–{{ interview.timeslot.end_at|date:"H:i" }}</strong>
+              <span class="muted">· {{ interview.timeslot.room_label }}</span>
+            {% else %}
+              <strong>Not yet scheduled</strong>
+            {% endif %}
+            <br>
+            <a href="{% url 'interviews:schedule_detail' interview.pk %}">{{ interview.title }}</a>
+            {% if interview.timeslot.teams_link %}
+              · <a href="{{ interview.timeslot.teams_link }}">Join Teams</a>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p>You have no sessions yet — they'll appear here once the schedule is published.</p>
+    {% endif %}
+
+    <p><a href="{% url 'interviews:schedule_list' %}">View the full schedule →</a></p>
   {% else %}
-    <h2>Coming soon</h2>
-    <p>The schedule will be published here shortly.</p>
+    <h2>Schedule IRP</h2>
+    <p>Project presentation schedule and Microsoft Teams links.</p>
     <p><a href="{% url 'interviews:login_request' %}">Sign in</a> to see your sessions.</p>
   {% endif %}
 {% endblock %}

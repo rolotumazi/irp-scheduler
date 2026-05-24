@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Full schedule — Schedule IRP{% endblock %}
+
+{% block content %}
+  <h2>Full schedule</h2>
+
+  <form method="get" class="filters">
+    <label>Day
+      <select name="day">
+        <option value="">All days</option>
+        {% for d in days %}
+          <option value="{{ d }}" {% if d == day %}selected{% endif %}>{{ d }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Person
+      <input type="text" name="person" value="{{ person }}" placeholder="name or email">
+    </label>
+    <button type="submit">Filter</button>
+    {% if day or person %}
+      <a href="{% url 'interviews:schedule_list' %}">Clear</a>
+    {% endif %}
+  </form>
+
+  <table>
+    <thead>
+      <tr><th>When</th><th>Room</th><th>Title</th><th>Student</th><th>Panel</th><th>Teams</th></tr>
+    </thead>
+    <tbody>
+      {% for interview in interviews %}
+        <tr>
+          <td>{% if interview.timeslot %}{{ interview.timeslot.start_at|date:"D j M, H:i" }}{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td>{{ interview.timeslot.room_label|default:"—" }}</td>
+          <td><a href="{% url 'interviews:schedule_detail' interview.pk %}">{{ interview.title }}</a></td>
+          <td>{{ interview.interviewee.get_full_name|default:interview.interviewee.email }}</td>
+          <td>
+            {% for p in interview.panelists.all %}{{ p.get_full_name|default:p.email }}{% if not forloop.last %}, {% endif %}{% endfor %}
+          </td>
+          <td>{% if interview.timeslot.teams_link %}<a href="{{ interview.timeslot.teams_link }}">Join</a>{% else %}<span class="muted">—</span>{% endif %}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="6">No sessions match.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

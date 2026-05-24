@@ -16,6 +16,12 @@
     .filters label { display: flex; flex-direction: column; font-size: 0.9rem; gap: 0.2rem; }
     ul.sessions { list-style: none; padding: 0; }
     ul.sessions li { padding: 0.6rem 0; border-bottom: 1px solid #eee; }
+    ul.messages { list-style: none; padding: 0; }
+    ul.messages li { padding: 0.5rem 0.8rem; border-radius: 4px; margin-bottom: 0.5rem; }
+    ul.messages li.success { background: #e7f6e7; }
+    ul.messages li.error { background: #fde7e7; }
+    fieldset.day { margin: 0 0 1rem; }
+    .slot { display: block; padding: 0.15rem 0; }
   </style>
 </head>
 <body>
@@ -31,6 +37,11 @@
     </nav>
   </header>
   <main>
+    {% if messages %}
+      <ul class="messages">
+        {% for m in messages %}<li class="{{ m.tags }}">{{ m }}</li>{% endfor %}
+      </ul>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
 </body>

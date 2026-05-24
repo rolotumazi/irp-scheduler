@@ -7,8 +7,17 @@ from django.core.management.base import CommandError
 from django.db import IntegrityError
 from django.test import RequestFactory, TestCase
 from django.urls import reverse
+from django.utils import timezone as django_tz
 
-from .models import Interview, InterviewPanelist, RescheduleRequest, Timeslot, User
+from .models import (
+    Interview,
+    InterviewPanelist,
+    PanelistAvailability,
+    PreferenceRound,
+    RescheduleRequest,
+    Timeslot,
+    User,
+)
 
 
 def make_slot(ref='W1D1-0930-01', room='Room 1', offset_hours=0, day_label='W1D1-Tue'):
@@ -422,3 +431,115 @@ class ScheduleViewTests(TestCase):
         self.client.force_login(self.amir)
         response = self.client.get(reverse('interviews:schedule_detail', args=[999999]))
         self.assertEqual(response.status_code, 404)
+
+
+def make_open_round(min_slots=2, **kwargs):
+    now = django_tz.now()
+    return PreferenceRound.objects.create(
+        name=kwargs.pop('name', 'Autumn round'),
+        opens_at=kwargs.pop('opens_at', now - timedelta(hours=1)),
+        closes_at=kwargs.pop('closes_at', now + timedelta(hours=1)),
+        status=kwargs.pop('status', PreferenceRound.Status.OPEN),
+        min_available_slots=min_slots,
+        **kwargs,
+    )
+
+
+class AvailabilityViewTests(TestCase):
+    def setUp(self):
+        self.grace = make_user('grace@example.ac.uk', User.Role.INTERVIEWER)
+        self.amir = make_user('amir@example.ac.uk', User.Role.INTERVIEWEE)
+        self.round = make_open_round(min_slots=2)
+        self.s1 = make_slot('S-1', 'Room 1', offset_hours=0)
+        self.s2 = make_slot('S-2', 'Room 2', offset_hours=0)
+        self.s3 = make_slot('S-3', 'Room 1', offset_hours=1)
+
+    def _url(self):
+        return reverse('interviews:availability', args=[self.round.pk])
+
+    def test_requires_login(self):
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login', response.url)
+
+    def test_interviewee_forbidden(self):
+        self.client.force_login(self.amir)
+        self.assertEqual(self.client.get(self._url()).status_code, 403)
+
+    def test_panelist_sees_grid(self):
+        self.client.force_login(self.grace)
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Room 1')
+
+    def test_save_below_minimum_rejected(self):
+        self.client.force_login(self.grace)
+        response = self.client.post(self._url(), {'timeslot': [self.s1.id]})
+        self.assertContains(response, 'at least 2')
+        self.assertEqual(PanelistAvailability.objects.filter(panelist=self.grace).count(), 0)
+
+    def test_save_meets_minimum(self):
+        self.client.force_login(self.grace)
+        response = self.client.post(self._url(), {'timeslot': [self.s1.id, self.s2.id]}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        saved = set(
+            PanelistAvailability.objects
+            .filter(round=self.round, panelist=self.grace)
+            .values_list('timeslot_id', flat=True)
+        )
+        self.assertEqual(saved, {self.s1.id, self.s2.id})
+
+    def test_save_replaces_previous_selection(self):
+        PanelistAvailability.objects.create(round=self.round, panelist=self.grace, timeslot=self.s1)
+        PanelistAvailability.objects.create(round=self.round, panelist=self.grace, timeslot=self.s2)
+        self.client.force_login(self.grace)
+        self.client.post(self._url(), {'timeslot': [self.s2.id, self.s3.id]}, follow=True)
+        saved = set(
+            PanelistAvailability.objects
+            .filter(round=self.round, panelist=self.grace)
+            .values_list('timeslot_id', flat=True)
+        )
+        self.assertEqual(saved, {self.s2.id, self.s3.id})
+
+    def test_prefill_shows_existing_checked(self):
+        PanelistAvailability.objects.create(round=self.round, panelist=self.grace, timeslot=self.s1)
+        self.client.force_login(self.grace)
+        response = self.client.get(self._url())
+        self.assertContains(response, f'value="{self.s1.id}" checked')
+
+    def test_closed_round_does_not_save(self):
+        self.round.status = PreferenceRound.Status.CLOSED
+        self.round.save()
+        self.client.force_login(self.grace)
+        self.client.post(self._url(), {'timeslot': [self.s1.id, self.s2.id]}, follow=True)
+        self.assertEqual(PanelistAvailability.objects.filter(panelist=self.grace).count(), 0)
+
+
+class RoundResponsesViewTests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='admin', email='admin@example.ac.uk', role=User.Role.ADMIN,
+            is_staff=True, is_superuser=True,
+        )
+        self.grace = make_user('grace@example.ac.uk', User.Role.INTERVIEWER)
+        self.alan = make_user('alan@example.ac.uk', User.Role.INTERVIEWER)
+        self.round = make_open_round(min_slots=1)
+        self.s1 = make_slot('S-1', 'Room 1')
+        PanelistAvailability.objects.create(round=self.round, panelist=self.grace, timeslot=self.s1)
+
+    def _url(self):
+        return reverse('interviews:round_responses', args=[self.round.pk])
+
+    def test_requires_staff(self):
+        self.client.force_login(self.grace)  # interviewer, not staff
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+
+    def test_staff_sees_response_counts(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'grace@example.ac.uk')
+        self.assertContains(response, 'alan@example.ac.uk')  # listed even though not responded
+        # 1 of 2 interviewers responded
+        self.assertContains(response, '1')

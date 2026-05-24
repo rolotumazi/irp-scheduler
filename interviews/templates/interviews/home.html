@@ -9,6 +9,10 @@
       Signed in as {{ user.get_full_name|default:user.email }} ({{ user.get_role_display }}).
     </p>
 
+    {% if open_round %}
+      <p><a href="{% url 'interviews:availability' open_round.pk %}">Set your availability for {{ open_round.name }} →</a></p>
+    {% endif %}
+
     {% if sessions %}
       <ul class="sessions">
         {% for interview in sessions %}

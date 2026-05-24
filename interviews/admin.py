@@ -1,7 +1,15 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 
-from .models import Interview, InterviewPanelist, RescheduleRequest, Timeslot, User
+from .models import (
+    Interview,
+    InterviewPanelist,
+    PanelistAvailability,
+    PreferenceRound,
+    RescheduleRequest,
+    Timeslot,
+    User,
+)
 
 
 @admin.register(User)
@@ -43,6 +51,21 @@ class InterviewAdmin(admin.ModelAdmin):
     search_fields = ('external_id', 'title', 'interviewee__email', 'interviewee__last_name')
     autocomplete_fields = ('timeslot', 'interviewee')
     inlines = [InterviewPanelistInline]
+
+
+@admin.register(PreferenceRound)
+class PreferenceRoundAdmin(admin.ModelAdmin):
+    list_display = ('name', 'status', 'opens_at', 'closes_at', 'min_available_slots')
+    list_filter = ('status',)
+    search_fields = ('name',)
+
+
+@admin.register(PanelistAvailability)
+class PanelistAvailabilityAdmin(admin.ModelAdmin):
+    list_display = ('round', 'panelist', 'timeslot', 'state')
+    list_filter = ('round', 'state')
+    search_fields = ('panelist__email', 'timeslot__slot_ref')
+    autocomplete_fields = ('round', 'panelist', 'timeslot')
 
 
 @admin.register(RescheduleRequest)

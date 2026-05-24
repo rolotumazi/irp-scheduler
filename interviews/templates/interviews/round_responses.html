@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Responses — {{ round.name }}{% endblock %}
+
+{% block content %}
+  <h2>Availability responses — {{ round.name }}</h2>
+  <p><strong>{{ responded }}</strong> of <strong>{{ total }}</strong> panelists have responded.</p>
+
+  <table>
+    <thead>
+      <tr><th>Panelist</th><th>Slots marked</th><th>Responded</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          <td>{{ row.user.get_full_name|default:row.user.email }} &lt;{{ row.user.email }}&gt;</td>
+          <td>{{ row.count }}</td>
+          <td>{% if row.responded %}Yes{% else %}<span class="muted">—</span>{% endif %}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="3">No panelists found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

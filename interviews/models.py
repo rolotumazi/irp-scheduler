@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.utils import timezone
 
 
 class User(AbstractUser):
@@ -125,3 +126,74 @@ class RescheduleRequest(models.Model):
 
     def __str__(self):
         return f'reschedule #{self.pk} for {self.interview.external_id} ({self.status})'
+
+
+class PreferenceRound(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = 'draft', 'Draft'
+        OPEN = 'open', 'Open'
+        CLOSED = 'closed', 'Closed'
+
+    name = models.CharField(max_length=100)
+    opens_at = models.DateTimeField()
+    closes_at = models.DateTimeField()
+    status = models.CharField(max_length=8, choices=Status.choices, default=Status.DRAFT)
+    min_available_slots = models.PositiveIntegerField(
+        default=0,
+        help_text='Panelists must mark at least this many timeslots available (0 = no minimum).',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-opens_at']
+
+    def __str__(self):
+        return f'{self.name} ({self.status})'
+
+    def is_open(self):
+        """Open for editing: status is OPEN and we're within the window."""
+        return (
+            self.status == self.Status.OPEN
+            and self.opens_at <= timezone.now() <= self.closes_at
+        )
+
+
+class PanelistAvailability(models.Model):
+    class State(models.TextChoices):
+        AVAILABLE = 'available', 'Available'
+        PREFERRED = 'preferred', 'Preferred'
+        UNAVAILABLE = 'unavailable', 'Unavailable'
+
+    round = models.ForeignKey(
+        PreferenceRound,
+        on_delete=models.CASCADE,
+        related_name='availabilities',
+    )
+    panelist = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='availabilities',
+        limit_choices_to={'role': User.Role.INTERVIEWER},
+    )
+    timeslot = models.ForeignKey(
+        Timeslot,
+        on_delete=models.CASCADE,
+        related_name='availabilities',
+    )
+    state = models.CharField(
+        max_length=12,
+        choices=State.choices,
+        default=State.AVAILABLE,
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['round', 'panelist', 'timeslot'],
+                name='unique_availability_per_slot',
+            ),
+        ]
+        indexes = [models.Index(fields=['round', 'panelist'])]
+
+    def __str__(self):
+        return f'{self.panelist.email} {self.state} @ {self.timeslot.slot_ref}'

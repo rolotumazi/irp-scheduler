@@ -1,15 +1,28 @@
+from itertools import groupby
+
 from django.conf import settings
+from django.contrib import messages
+from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import logout
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import PermissionDenied
 from django.core.mail import send_mail
-from django.db.models import F, Min, Q
+from django.db import transaction
+from django.db.models import Count, F, Min, Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from sesame.utils import get_query_string
 
 from .forms import LoginRequestForm
-from .models import Interview, InterviewPanelist, Timeslot, User
+from .models import (
+    Interview,
+    InterviewPanelist,
+    PanelistAvailability,
+    PreferenceRound,
+    Timeslot,
+    User,
+)
 
 
 def healthz(request):
@@ -25,6 +38,7 @@ def _ordered_by_start(qs):
 
 def home(request):
     sessions = None
+    open_round = None
     if request.user.is_authenticated:
         # Membership via a subquery (not an M2M join) so we avoid duplicate rows
         # and the Postgres "SELECT DISTINCT + ORDER BY joined column" error.
@@ -35,7 +49,87 @@ def home(request):
             .select_related('timeslot', 'interviewee')
             .prefetch_related('panelists')
         )
-    return render(request, 'interviews/home.html', {'sessions': sessions})
+        if request.user.role == User.Role.INTERVIEWER:
+            open_round = (
+                PreferenceRound.objects
+                .filter(status=PreferenceRound.Status.OPEN)
+                .order_by('-opens_at')
+                .first()
+            )
+    return render(request, 'interviews/home.html', {'sessions': sessions, 'open_round': open_round})
+
+
+@login_required
+def availability(request, round_id):
+    if request.user.role != User.Role.INTERVIEWER:
+        raise PermissionDenied('Only panelists set availability.')
+
+    round_obj = get_object_or_404(PreferenceRound, pk=round_id)
+    timeslots = list(Timeslot.objects.order_by('start_at', 'room_label'))
+    valid_ids = {t.id for t in timeslots}
+    existing = set(
+        PanelistAvailability.objects
+        .filter(round=round_obj, panelist=request.user)
+        .values_list('timeslot_id', flat=True)
+    )
+
+    if request.method == 'POST':
+        if not round_obj.is_open():
+            messages.error(request, 'This availability round is not open.')
+            return redirect('interviews:availability', round_id=round_obj.pk)
+
+        selected = {int(v) for v in request.POST.getlist('timeslot') if v.isdigit()} & valid_ids
+        if len(selected) < round_obj.min_available_slots:
+            messages.error(
+                request,
+                f'Please mark at least {round_obj.min_available_slots} timeslots '
+                f'(you marked {len(selected)}).',
+            )
+            existing = selected  # keep their selection on the re-render
+        else:
+            with transaction.atomic():
+                PanelistAvailability.objects.filter(round=round_obj, panelist=request.user).delete()
+                PanelistAvailability.objects.bulk_create([
+                    PanelistAvailability(
+                        round=round_obj, panelist=request.user, timeslot_id=tid,
+                        state=PanelistAvailability.State.AVAILABLE,
+                    )
+                    for tid in selected
+                ])
+            messages.success(request, f'Saved — {len(selected)} timeslots marked available.')
+            return redirect('interviews:availability', round_id=round_obj.pk)
+
+    days = [
+        (day, list(slots))
+        for day, slots in groupby(timeslots, key=lambda t: t.day_label)
+    ]
+    return render(request, 'interviews/availability.html', {
+        'round': round_obj,
+        'days': days,
+        'existing': existing,
+        'editable': round_obj.is_open(),
+    })
+
+
+@staff_member_required
+def round_responses(request, round_id):
+    round_obj = get_object_or_404(PreferenceRound, pk=round_id)
+    counts = dict(
+        PanelistAvailability.objects.filter(round=round_obj)
+        .values('panelist')
+        .annotate(n=Count('timeslot'))
+        .values_list('panelist', 'n')
+    )
+    rows = [
+        {'user': u, 'count': counts.get(u.id, 0), 'responded': u.id in counts}
+        for u in User.objects.filter(role=User.Role.INTERVIEWER).order_by('email')
+    ]
+    return render(request, 'interviews/round_responses.html', {
+        'round': round_obj,
+        'rows': rows,
+        'responded': sum(1 for r in rows if r['responded']),
+        'total': len(rows),
+    })
 
 
 @login_required

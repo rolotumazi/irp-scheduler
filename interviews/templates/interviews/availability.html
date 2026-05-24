@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Your availability — {{ round.name }}{% endblock %}
+
+{% block content %}
+  <h2>Your availability — {{ round.name }}</h2>
+
+  {% if round.min_available_slots %}
+    <p class="muted">Please mark at least <strong>{{ round.min_available_slots }}</strong> timeslots you can attend.</p>
+  {% endif %}
+  {% if not editable %}
+    <p class="muted"><strong>This round is not open for changes.</strong></p>
+  {% endif %}
+
+  <form method="post">
+    {% csrf_token %}
+    {% for day, slots in days %}
+      <fieldset class="day" data-day>
+        <legend>{{ day }}</legend>
+        {% if editable %}
+          <p>
+            <button type="button" data-select-all>Select all</button>
+            <button type="button" data-clear>Clear</button>
+          </p>
+        {% endif %}
+        {% for t in slots %}
+          <label class="slot">
+            <input type="checkbox" name="timeslot" value="{{ t.id }}"{% if t.id in existing %} checked{% endif %}{% if not editable %} disabled{% endif %}>
+            {{ t.start_at|date:"H:i" }}–{{ t.end_at|date:"H:i" }} · {{ t.room_label }}
+          </label>
+        {% endfor %}
+      </fieldset>
+    {% endfor %}
+
+    {% if editable %}
+      <p><button type="submit">Save availability</button></p>
+    {% endif %}
+  </form>
+
+  <script>
+    document.querySelectorAll('[data-day]').forEach(function (fs) {
+      var boxes = fs.querySelectorAll('input[type=checkbox]');
+      var setAll = function (v) { boxes.forEach(function (b) { b.checked = v; }); };
+      var selectAll = fs.querySelector('[data-select-all]');
+      var clear = fs.querySelector('[data-clear]');
+      if (selectAll) selectAll.addEventListener('click', function () { setAll(true); });
+      if (clear) clear.addEventListener('click', function () { setAll(false); });
+    });
+  </script>
+{% endblock %}

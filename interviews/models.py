@@ -199,6 +199,63 @@ class PanelistAvailability(models.Model):
         return f'{self.panelist.email} {self.state} @ {self.timeslot.slot_ref}'
 
 
+class SchedulePublication(models.Model):
+    """A solver run + (optionally) a published assignment.
+
+    Created in `proposed` state by the solver; an admin reviews the inline
+    ProposalAssignments and either publishes (writes the timeslots back onto
+    Interviews + enqueues schedule_change notifications) or discards.
+    """
+
+    class Status(models.TextChoices):
+        PROPOSED = 'proposed', 'Proposed'
+        PUBLISHED = 'published', 'Published'
+        DISCARDED = 'discarded', 'Discarded'
+
+    round = models.ForeignKey(
+        PreferenceRound, on_delete=models.PROTECT, related_name='publications',
+    )
+    created_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PROPOSED)
+    solver_status = models.CharField(max_length=32, blank=True)
+    objective_value = models.BigIntegerField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'publication #{self.pk} for {self.round.name} ({self.status})'
+
+
+class ProposalAssignment(models.Model):
+    """One (interview → timeslot) row inside a SchedulePublication. `timeslot`
+    is nullable for interviews the solver could not place; `reason` records why."""
+
+    publication = models.ForeignKey(
+        SchedulePublication, on_delete=models.CASCADE, related_name='assignments',
+    )
+    interview = models.ForeignKey(Interview, on_delete=models.CASCADE)
+    timeslot = models.ForeignKey(Timeslot, null=True, blank=True, on_delete=models.SET_NULL)
+    reason = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['publication', 'interview'],
+                name='unique_assignment_per_publication',
+            ),
+        ]
+
+    def __str__(self):
+        target = self.timeslot.slot_ref if self.timeslot else 'UNPLACED'
+        return f'{self.interview.external_id} → {target}'
+
+
 class Notification(models.Model):
     """Outbound email queue + audit log. dedupe_key makes enqueueing idempotent."""
 
@@ -225,6 +282,9 @@ class Notification(models.Model):
     )
     round = models.ForeignKey(
         PreferenceRound, null=True, blank=True, on_delete=models.SET_NULL, related_name='notifications',
+    )
+    publication = models.ForeignKey(
+        SchedulePublication, null=True, blank=True, on_delete=models.SET_NULL, related_name='notifications',
     )
     error = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

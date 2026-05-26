@@ -13,6 +13,12 @@ from sesame.utils import get_query_string
 from .models import Notification, PanelistAvailability, User
 
 
+def _slot_label(slot):
+    if slot is None:
+        return '(no slot yet)'
+    return f'{slot.slot_ref} — {slot.day_label} {slot.start_at:%H:%M}, {slot.room_label}'
+
+
 def build_login_link(user, next_path=None):
     """A single-use magic-link URL that signs `user` in, optionally landing on
     `next_path` afterwards."""
@@ -58,6 +64,28 @@ def enqueue_preference_request(round_obj, user):
         body=render_to_string('emails/preference_request.txt', ctx),
         dedupe_key=f'preference_request:{round_obj.pk}:{user.pk}',
         round=round_obj,
+    )
+
+
+def enqueue_schedule_change(interview, user, old_timeslot, new_timeslot, publication):
+    """One notification per (publication, interview, user). Idempotent — safe to
+    re-run a publish."""
+    link = build_login_link(user, reverse('interviews:schedule_detail', args=[interview.pk]))
+    ctx = {
+        'user': user,
+        'interview': interview,
+        'old_slot': _slot_label(old_timeslot),
+        'new_slot': _slot_label(new_timeslot),
+        'link': link,
+    }
+    return enqueue(
+        recipient=user,
+        kind=Notification.Kind.SCHEDULE_CHANGE,
+        subject=f'Your interview slot has changed — {interview.title}',
+        body=render_to_string('emails/schedule_change.txt', ctx),
+        dedupe_key=f'schedule_change:{publication.pk}:{interview.pk}:{user.pk}',
+        interview=interview,
+        publication=publication,
     )
 
 

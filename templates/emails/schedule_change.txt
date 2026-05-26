@@ -1,0 +1,15 @@
+Hello {{ user.get_full_name|default:user.email }},
+
+The slot for "{{ interview.title }}" has changed.
+
+Previous slot: {{ old_slot }}
+New slot:      {{ new_slot }}
+
+Open your session for the Microsoft Teams link:
+
+{{ link }}
+
+The link signs you in automatically and expires after a short while.
+
+Thanks,
+Schedule IRP

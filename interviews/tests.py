@@ -16,11 +16,14 @@ from .models import (
     Notification,
     PanelistAvailability,
     PreferenceRound,
+    ProposalAssignment,
     RescheduleRequest,
+    SchedulePublication,
     Timeslot,
     User,
 )
 from .notifications import enqueue_preference_request
+from .solver import propose, publish
 
 
 def make_slot(ref='W1D1-0930-01', room='Room 1', offset_hours=0, day_label='W1D1-Tue'):
@@ -619,3 +622,189 @@ class NotificationTests(TestCase):
         mail.outbox.clear()
         call_command('run_worker', '--once')
         self.assertEqual(len(mail.outbox), 1)
+
+
+class SolverTests(TestCase):
+    """The CP-SAT solver: hard availability, no panelist double-booking, and
+    'preferences > compactness' objective. See interviews/solver.py."""
+
+    def setUp(self):
+        self.round = make_open_round(min_slots=0)
+        self.grace = make_user('grace@example.ac.uk', User.Role.INTERVIEWER)
+        self.alan = make_user('alan@example.ac.uk', User.Role.INTERVIEWER)
+        self.amir = make_user('amir@example.ac.uk', User.Role.INTERVIEWEE)
+        self.bea = make_user('bea@example.ac.uk', User.Role.INTERVIEWEE)
+
+    def _interview(self, ext_id, interviewee, panelists, title='An interview'):
+        i = Interview.objects.create(external_id=ext_id, title=title, interviewee=interviewee)
+        for p in panelists:
+            InterviewPanelist.objects.create(interview=i, user=p)
+        return i
+
+    def _avail(self, panelist, timeslot, state=PanelistAvailability.State.AVAILABLE):
+        PanelistAvailability.objects.create(
+            round=self.round, panelist=panelist, timeslot=timeslot, state=state,
+        )
+
+    def test_places_single_interview_in_only_available_slot(self):
+        slot = make_slot('S-1', 'Room 1')
+        i = self._interview('IRP-1', self.amir, [self.grace])
+        self._avail(self.grace, slot)
+
+        pub = propose(self.round)
+
+        self.assertEqual(pub.status, SchedulePublication.Status.PROPOSED)
+        assignment = pub.assignments.get(interview=i)
+        self.assertEqual(assignment.timeslot, slot)
+
+    def test_unplaceable_when_panelist_has_no_availability(self):
+        make_slot('S-1', 'Room 1')
+        i = self._interview('IRP-1', self.amir, [self.grace])
+        # grace has no availability row at all → strict policy treats as unavailable
+        pub = propose(self.round)
+        a = pub.assignments.get(interview=i)
+        self.assertIsNone(a.timeslot)
+        self.assertIn('available', a.reason.lower())
+
+    def test_no_panelist_double_booking_in_overlapping_window(self):
+        # Same time window, two rooms → grace can only do one of the two.
+        s1 = make_slot('S-1', 'Room 1', offset_hours=0)
+        s2 = make_slot('S-2', 'Room 2', offset_hours=0)
+        self._interview('IRP-1', self.amir, [self.grace])
+        self._interview('IRP-2', self.bea, [self.grace])
+        for s in (s1, s2):
+            self._avail(self.grace, s)
+
+        pub = propose(self.round)
+
+        placed = pub.assignments.exclude(timeslot=None).count()
+        self.assertEqual(placed, 1, 'grace can only sit on one of the two same-window interviews')
+
+    def test_no_two_interviews_in_the_same_timeslot(self):
+        s1 = make_slot('S-1', 'Room 1')
+        # Two independent panels but only one slot → only one can be placed.
+        self._interview('IRP-1', self.amir, [self.grace])
+        self._interview('IRP-2', self.bea, [self.alan])
+        self._avail(self.grace, s1)
+        self._avail(self.alan, s1)
+
+        pub = propose(self.round)
+
+        slot_ids = list(pub.assignments.exclude(timeslot=None).values_list('timeslot_id', flat=True))
+        self.assertEqual(len(slot_ids), 1)
+
+    def test_prefers_preferred_slot_over_merely_available(self):
+        # Two non-overlapping slots both feasible; "preferred" should win.
+        s_a = make_slot('S-A', 'Room 1', offset_hours=0)
+        s_b = make_slot('S-B', 'Room 1', offset_hours=1)
+        i = self._interview('IRP-1', self.amir, [self.grace])
+        self._avail(self.grace, s_a, state=PanelistAvailability.State.AVAILABLE)
+        self._avail(self.grace, s_b, state=PanelistAvailability.State.PREFERRED)
+
+        pub = propose(self.round)
+
+        self.assertEqual(pub.assignments.get(interview=i).timeslot, s_b)
+
+
+class PublishTests(TestCase):
+    def setUp(self):
+        self.round = make_open_round(min_slots=0)
+        self.grace = make_user('grace@example.ac.uk', User.Role.INTERVIEWER)
+        self.amir = make_user('amir@example.ac.uk', User.Role.INTERVIEWEE)
+        self.bea = make_user('bea@example.ac.uk', User.Role.INTERVIEWEE)
+        self.slot1 = make_slot('S-1', 'Room 1', offset_hours=0)
+        self.slot2 = make_slot('S-2', 'Room 1', offset_hours=1)
+        self.i_amir = Interview.objects.create(
+            external_id='IRP-A', title='Amir', interviewee=self.amir,
+        )
+        InterviewPanelist.objects.create(interview=self.i_amir, user=self.grace)
+
+    def _make_proposed_publication(self, *, assign_to=None):
+        pub = SchedulePublication.objects.create(
+            round=self.round, solver_status='OPTIMAL', objective_value=0,
+        )
+        ProposalAssignment.objects.create(
+            publication=pub, interview=self.i_amir, timeslot=assign_to,
+        )
+        return pub
+
+    def test_publish_writes_timeslot_back_to_interview(self):
+        pub = self._make_proposed_publication(assign_to=self.slot1)
+
+        publish(pub)
+
+        self.i_amir.refresh_from_db()
+        self.assertEqual(self.i_amir.timeslot, self.slot1)
+        pub.refresh_from_db()
+        self.assertEqual(pub.status, SchedulePublication.Status.PUBLISHED)
+        self.assertIsNotNone(pub.published_at)
+
+    def test_publish_enqueues_schedule_change_for_each_participant(self):
+        pub = self._make_proposed_publication(assign_to=self.slot1)
+
+        publish(pub)
+
+        recipients = set(
+            Notification.objects
+            .filter(kind=Notification.Kind.SCHEDULE_CHANGE)
+            .values_list('recipient__email', flat=True)
+        )
+        self.assertEqual(recipients, {'amir@example.ac.uk', 'grace@example.ac.uk'})
+
+    def test_publish_does_not_notify_when_slot_unchanged(self):
+        # Interview already in slot1; proposal places it in slot1 again.
+        self.i_amir.timeslot = self.slot1
+        self.i_amir.save()
+        pub = self._make_proposed_publication(assign_to=self.slot1)
+
+        publish(pub)
+
+        self.assertFalse(
+            Notification.objects.filter(kind=Notification.Kind.SCHEDULE_CHANGE).exists()
+        )
+
+    def test_publish_idempotent_via_dedupe(self):
+        # Two consecutive publications for the same change should NOT duplicate
+        # notifications for the same (publication, interview, user). Republishing
+        # the *same* publication is blocked (status check); but enqueueing the same
+        # schedule_change twice from one publication is a no-op.
+        pub = self._make_proposed_publication(assign_to=self.slot1)
+        publish(pub)
+        count_before = Notification.objects.filter(kind=Notification.Kind.SCHEDULE_CHANGE).count()
+
+        # A second proposal that moves it back to no-slot shouldn't double-fire
+        # for the first publication's IDs.
+        pub2 = SchedulePublication.objects.create(round=self.round, solver_status='OPTIMAL')
+        ProposalAssignment.objects.create(publication=pub2, interview=self.i_amir, timeslot=self.slot2)
+        publish(pub2)
+        self.assertEqual(
+            Notification.objects.filter(kind=Notification.Kind.SCHEDULE_CHANGE).count(),
+            count_before + 2,  # one new notification each for amir + grace, keyed by pub2.pk
+        )
+
+    def test_publish_rejects_already_published(self):
+        pub = self._make_proposed_publication(assign_to=self.slot1)
+        publish(pub)
+        with self.assertRaises(ValueError):
+            publish(pub)
+
+    def test_publish_handles_swap_without_oneto_one_collision(self):
+        # A: slot1 → slot2, B: slot2 → slot1 (a straight swap). The OneToOne on
+        # Interview.timeslot would collide if we rewrote in place; publish() must
+        # clear first then assign.
+        i_b = Interview.objects.create(external_id='IRP-B', title='Bea', interviewee=self.bea)
+        self.i_amir.timeslot = self.slot1
+        self.i_amir.save()
+        i_b.timeslot = self.slot2
+        i_b.save()
+
+        pub = SchedulePublication.objects.create(round=self.round, solver_status='OPTIMAL')
+        ProposalAssignment.objects.create(publication=pub, interview=self.i_amir, timeslot=self.slot2)
+        ProposalAssignment.objects.create(publication=pub, interview=i_b, timeslot=self.slot1)
+
+        publish(pub)
+
+        self.i_amir.refresh_from_db()
+        i_b.refresh_from_db()
+        self.assertEqual(self.i_amir.timeslot, self.slot2)
+        self.assertEqual(i_b.timeslot, self.slot1)
